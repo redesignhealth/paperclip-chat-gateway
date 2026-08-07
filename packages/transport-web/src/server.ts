@@ -2,6 +2,7 @@ import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyCookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
+import { registerAgentRoutes } from "./routes/agent.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerChatRoutes } from "./routes/chat.js";
 import type { GatewayDeps } from "./types.js";
@@ -33,6 +34,7 @@ export async function buildServer(options: BuildServerOptions): Promise<FastifyI
 
   registerAuthRoutes(app, options.deps);
   registerChatRoutes(app, options.deps);
+  registerAgentRoutes(app, options.deps);
 
   if (options.uiDistPath) {
     await app.register(fastifyStatic, {

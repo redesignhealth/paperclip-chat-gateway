@@ -2,7 +2,16 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GatewayConfigError, loadGatewayConfigFile, parseTrustProxy } from "../src/config.js";
+import {
+  GatewayConfigError,
+  isAgentBrokerEnabled,
+  loadAppEnv,
+  loadGatewayConfigFile,
+  parseBooleanEnv,
+  parseCompanyIdAllowlist,
+  parseTrustProxy,
+  validateSchedulerBaseUrl,
+} from "../src/config.js";
 
 describe("loadGatewayConfigFile", () => {
   let dir: string;
@@ -84,5 +93,265 @@ describe("parseTrustProxy", () => {
 
   it("parses a comma-separated list as an array", () => {
     expect(parseTrustProxy("10.0.0.1, 10.0.0.2")).toEqual(["10.0.0.1", "10.0.0.2"]);
+  });
+});
+
+describe("parseBooleanEnv", () => {
+  it("treats unset/empty and anything but a truthy token as false", () => {
+    expect(parseBooleanEnv(undefined)).toBe(false);
+    expect(parseBooleanEnv("")).toBe(false);
+    expect(parseBooleanEnv("nope")).toBe(false);
+  });
+
+  it("parses common truthy tokens case-insensitively", () => {
+    expect(parseBooleanEnv("1")).toBe(true);
+    expect(parseBooleanEnv("true")).toBe(true);
+    expect(parseBooleanEnv("TRUE")).toBe(true);
+    expect(parseBooleanEnv("yes")).toBe(true);
+    expect(parseBooleanEnv("on")).toBe(true);
+  });
+});
+
+describe("parseCompanyIdAllowlist", () => {
+  it("returns an empty array for unset/empty values", () => {
+    expect(parseCompanyIdAllowlist(undefined)).toEqual([]);
+    expect(parseCompanyIdAllowlist("")).toEqual([]);
+  });
+
+  it("splits, trims, and drops empty entries", () => {
+    expect(parseCompanyIdAllowlist("company-1, company-2 ,, company-3")).toEqual([
+      "company-1",
+      "company-2",
+      "company-3",
+    ]);
+  });
+});
+
+describe("validateSchedulerBaseUrl", () => {
+  it("accepts an https URL with a normal hostname", () => {
+    expect(validateSchedulerBaseUrl("https://scheduler.example.com", false)).toBeNull();
+  });
+
+  it("rejects a plain http URL by default", () => {
+    expect(validateSchedulerBaseUrl("http://scheduler.example.com", false)).toMatch(/https/);
+  });
+
+  it("rejects the cloud-metadata address by default", () => {
+    expect(validateSchedulerBaseUrl("https://169.254.169.254/latest/meta-data", false)).toMatch(
+      /loopback\/link-local\/metadata/,
+    );
+  });
+
+  it("rejects loopback addresses and localhost by default", () => {
+    expect(validateSchedulerBaseUrl("https://127.0.0.1:8080", false)).not.toBeNull();
+    expect(validateSchedulerBaseUrl("https://localhost:8080", false)).not.toBeNull();
+  });
+
+  it("allows http and loopback when explicitly opted into for dev", () => {
+    expect(validateSchedulerBaseUrl("http://127.0.0.1:8080", true)).toBeNull();
+  });
+
+  it("rejects a malformed URL", () => {
+    expect(validateSchedulerBaseUrl("not-a-url", false)).not.toBeNull();
+  });
+
+  it("rejects the metadata.google.internal hostname by default", () => {
+    expect(validateSchedulerBaseUrl("https://metadata.google.internal/", false)).not.toBeNull();
+  });
+
+  describe("IPv6 loopback/link-local/unique-local coverage", () => {
+    it("rejects ::1 (IPv6 loopback) — URL.hostname serializes this as \"[::1]\", brackets included", () => {
+      expect(validateSchedulerBaseUrl("https://[::1]:8080", false)).not.toBeNull();
+    });
+
+    it("rejects ::ffff:127.0.0.1 (IPv4-mapped IPv6 loopback)", () => {
+      expect(validateSchedulerBaseUrl("https://[::ffff:127.0.0.1]:8080", false)).not.toBeNull();
+    });
+
+    it("rejects fe80::/10 link-local addresses", () => {
+      expect(validateSchedulerBaseUrl("https://[fe80::1]:8080", false)).not.toBeNull();
+      expect(validateSchedulerBaseUrl("https://[febf::1]:8080", false)).not.toBeNull();
+    });
+
+    it("rejects fc00::/7 unique-local addresses", () => {
+      expect(validateSchedulerBaseUrl("https://[fc00::1]:8080", false)).not.toBeNull();
+      expect(validateSchedulerBaseUrl("https://[fd12:3456::1]:8080", false)).not.toBeNull();
+    });
+
+    it("allows a normal global-unicast IPv6 address", () => {
+      expect(validateSchedulerBaseUrl("https://[2001:db8::1]:8080", false)).toBeNull();
+    });
+
+    it("allows IPv6 loopback when explicitly opted into for dev", () => {
+      expect(validateSchedulerBaseUrl("http://[::1]:8080", true)).toBeNull();
+    });
+  });
+});
+
+describe("isAgentBrokerEnabled", () => {
+  it("is false when AGENT_JWT_SECRET is unset", () => {
+    expect(isAgentBrokerEnabled({ AGENT_JWT_SECRET: undefined })).toBe(false);
+  });
+
+  it("is true when AGENT_JWT_SECRET is set", () => {
+    expect(isAgentBrokerEnabled({ AGENT_JWT_SECRET: "a-secret-at-least-32-characters-long" })).toBe(true);
+  });
+});
+
+describe("loadAppEnv — agent broker is opt-in", () => {
+  const BASE_ENV = {
+    COOKIE_SECRET: "a-cookie-secret-at-least-32-characters",
+    PAPERCLIP_API_BASE_URL: "https://paperclip.example/api",
+    OIDC_ISSUER_URL: "https://issuer.example",
+    OIDC_CLIENT_ID: "client-id",
+    OIDC_CLIENT_SECRET: "client-secret",
+    OIDC_REDIRECT_URI: "https://gateway.example/auth/callback",
+    OIDC_ALLOWED_EMAIL_DOMAINS: "example.com",
+  };
+
+  it("starts successfully with the agent broker unconfigured (no AGENT_JWT_* set)", () => {
+    const env = loadAppEnv(BASE_ENV as unknown as NodeJS.ProcessEnv);
+    expect(env.AGENT_JWT_SECRET).toBeUndefined();
+    expect(isAgentBrokerEnabled(env)).toBe(false);
+  });
+
+  it("rejects a broker secret shorter than 32 characters when the broker is being enabled", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_SECRET: "too-short",
+        AGENT_JWT_COMPANY_ID: "company-1",
+        AGENT_JWT_AUDIENCE: "paperclip-api",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("rejects an enabled broker with no AGENT_JWT_COMPANY_ID allowlist", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_SECRET: "a-secret-at-least-32-characters-long",
+        AGENT_JWT_AUDIENCE: "paperclip-api",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("rejects an enabled broker with neither AGENT_JWT_ISSUER nor AGENT_JWT_AUDIENCE set", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_SECRET: "a-secret-at-least-32-characters-long",
+        AGENT_JWT_COMPANY_ID: "company-1",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("rejects an enabled broker with only AGENT_JWT_AUDIENCE set (AGENT_JWT_ISSUER missing) — both are required", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_SECRET: "a-secret-at-least-32-characters-long",
+        AGENT_JWT_COMPANY_ID: "company-1",
+        AGENT_JWT_AUDIENCE: "paperclip-api",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("rejects an enabled broker with only AGENT_JWT_ISSUER set (AGENT_JWT_AUDIENCE missing) — both are required", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_SECRET: "a-secret-at-least-32-characters-long",
+        AGENT_JWT_COMPANY_ID: "company-1",
+        AGENT_JWT_ISSUER: "paperclip",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("rejects an enabled broker whose AGENT_JWT_COMPANY_ID parses to an empty allowlist (e.g. a bare comma)", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_SECRET: "a-secret-at-least-32-characters-long",
+        AGENT_JWT_COMPANY_ID: ",",
+        AGENT_JWT_ISSUER: "paperclip",
+        AGENT_JWT_AUDIENCE: "paperclip-api",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("rejects AGENT_JWT_COMPANY_ID/ISSUER/AUDIENCE being set without AGENT_JWT_SECRET", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_COMPANY_ID: "company-1",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("rejects AGENT_JWT_INSTANCE_ID being set alone without AGENT_JWT_SECRET", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_INSTANCE_ID: "some-instance",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("rejects AGENT_JWT_ENABLE_LEGACY_FALLBACK being set alone without AGENT_JWT_SECRET", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_ENABLE_LEGACY_FALLBACK: "true",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("rejects AGENT_JWT_CLOCK_TOLERANCE_SECONDS being set alone without AGENT_JWT_SECRET", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_CLOCK_TOLERANCE_SECONDS: "10",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("rejects AGENT_JWT_MAX_TOKEN_AGE_SECONDS being set alone without AGENT_JWT_SECRET", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_MAX_TOKEN_AGE_SECONDS: "3600",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("accepts a fully and correctly configured broker", () => {
+    const env = loadAppEnv({
+      ...BASE_ENV,
+      AGENT_JWT_SECRET: "a-secret-at-least-32-characters-long",
+      AGENT_JWT_COMPANY_ID: "company-1,company-2",
+      AGENT_JWT_ISSUER: "paperclip",
+      AGENT_JWT_AUDIENCE: "paperclip-api",
+    } as unknown as NodeJS.ProcessEnv);
+    expect(isAgentBrokerEnabled(env)).toBe(true);
+    expect(parseCompanyIdAllowlist(env.AGENT_JWT_COMPANY_ID)).toEqual(["company-1", "company-2"]);
+  });
+
+  it("rejects an insecure SCHEDULER_BASE_URL by default", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        SCHEDULER_BASE_URL: "http://169.254.169.254/",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("accepts an insecure SCHEDULER_BASE_URL when SCHEDULER_ALLOW_INSECURE_URL is set (dev escape hatch)", () => {
+    const env = loadAppEnv({
+      ...BASE_ENV,
+      SCHEDULER_BASE_URL: "http://127.0.0.1:4000",
+      SCHEDULER_ALLOW_INSECURE_URL: "true",
+    } as unknown as NodeJS.ProcessEnv);
+    expect(env.SCHEDULER_BASE_URL).toBe("http://127.0.0.1:4000");
   });
 });

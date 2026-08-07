@@ -152,3 +152,8 @@ network sidecar configuration.
 - [ ] The health check command matches what's actually in your pinned image
       tag (re-run the `which curl; which wget` check above if you ever
       change the base image in `apps/gateway/Dockerfile`).
+- [ ] If the agent-facing identity broker is enabled (`AGENT_JWT_SECRET`
+      set): the secret comes from `secrets` (SSM-backed), never from the
+      plaintext `environment` block, and `AGENT_JWT_COMPANY_ID` plus both
+      `AGENT_JWT_ISSUER`/`AGENT_JWT_AUDIENCE` are set to real values, not
+      the sample task definition's placeholders.
