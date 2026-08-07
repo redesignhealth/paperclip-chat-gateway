@@ -1,24 +1,57 @@
 import { describe, expect, it } from "vitest";
-import { EnvAgentCredentialStore, FileAgentCredentialStore, UnknownAgentCredentialError } from "../src/credential-store.js";
+import { EnvAgentCredentialStore, FileAgentCredentialStore } from "../src/credential-store.js";
+
+describe("EnvAgentCredentialStore.envVarNameFor", () => {
+  it("is injective: no two distinct agentIds it's ever plausible to configure map to the same env var", () => {
+    // Every one of these was chosen because a naive "collapse non-alphanumerics
+    // to `_`" scheme (the pre-fix behavior) collapses at least two of them onto
+    // the same env var name — which would hand one agent's credential to a
+    // lookup for a completely different agent.
+    const agentIds = [
+      "agent-alice",
+      "agent.alice",
+      "agent_alice",
+      "agent alice",
+      "agent--alice",
+      "agent__alice",
+      "agent_2dalice", // deliberately shaped to look like an already-encoded hyphen
+      "agent-bob",
+      "agent.bob",
+      "",
+      "agent",
+    ];
+
+    const names = agentIds.map((id) => EnvAgentCredentialStore.envVarNameFor(id));
+    expect(new Set(names).size).toBe(agentIds.length);
+  });
+
+  it("passes alphanumeric agentIds through unchanged", () => {
+    expect(EnvAgentCredentialStore.envVarNameFor("agentalice123")).toBe("PAPERCLIP_AGENT_KEY__agentalice123");
+  });
+});
 
 describe("EnvAgentCredentialStore", () => {
   it("returns the key for the exact agent it was set for", async () => {
-    const store = new EnvAgentCredentialStore({
-      PAPERCLIP_AGENT_KEY__agent_alice: "key-for-alice",
-      PAPERCLIP_AGENT_KEY__agent_bob: "key-for-bob",
-    } as NodeJS.ProcessEnv);
+    const env = {
+      [EnvAgentCredentialStore.envVarNameFor("agent-alice")]: "key-for-alice",
+      [EnvAgentCredentialStore.envVarNameFor("agent-bob")]: "key-for-bob",
+    } as NodeJS.ProcessEnv;
+    const store = new EnvAgentCredentialStore(env);
 
     await expect(store.getKeyFor("agent-alice")).resolves.toBe("key-for-alice");
     await expect(store.getKeyFor("agent-bob")).resolves.toBe("key-for-bob");
   });
 
-  it("never leaks one agent's key when asked for a different, unconfigured agent", async () => {
-    const store = new EnvAgentCredentialStore({
-      PAPERCLIP_AGENT_KEY__agent_alice: "key-for-alice",
-    } as NodeJS.ProcessEnv);
+  it("never leaks one agent's key to a lookup for a different agentId, even one that collided under the old scheme", async () => {
+    const env = {
+      [EnvAgentCredentialStore.envVarNameFor("agent-alice")]: "key-for-alice",
+    } as NodeJS.ProcessEnv;
+    const store = new EnvAgentCredentialStore(env);
 
     await expect(store.getKeyFor("agent-mallory")).resolves.toBeNull();
-    await expect(store.getKeyFor("agent_alice_evil_twin")).resolves.toBeNull();
+    // Would have collided with "agent-alice" under the pre-fix normalization.
+    await expect(store.getKeyFor("agent.alice")).resolves.toBeNull();
+    await expect(store.getKeyFor("agent_alice")).resolves.toBeNull();
   });
 
   it("returns null, not empty string, for an unset key", async () => {
@@ -53,12 +86,5 @@ describe("FileAgentCredentialStore", () => {
     contents = JSON.stringify({ "agent-alice": "new-key" });
     await store.reload();
     await expect(store.getKeyFor("agent-alice")).resolves.toBe("new-key");
-  });
-});
-
-describe("UnknownAgentCredentialError", () => {
-  it("carries the agent id in its message for debuggability", () => {
-    const error = new UnknownAgentCredentialError("agent-alice");
-    expect(error.message).toContain("agent-alice");
   });
 });

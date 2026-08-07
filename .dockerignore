@@ -1,0 +1,12 @@
+node_modules
+**/node_modules
+**/dist
+**/coverage
+.git
+.github
+.env
+.env.*
+!.env.example
+apps/gateway/config/gateway.json
+apps/gateway/config/agent-credentials.json
+*.log

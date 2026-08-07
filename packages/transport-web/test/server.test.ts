@@ -21,8 +21,8 @@ const OIDC_CONFIG = {
 class MockIssuerPort implements OidcPort {
   constructor(private readonly claims: { sub: string; email?: string; name?: string } | null) {}
 
-  async buildAuthorizationUrl(input: { redirectUri: string; state: string; codeVerifier: string }) {
-    return { url: `https://issuer.example/authorize?state=${input.state}`, codeChallenge: "cc" };
+  async buildAuthorizationUrl(input: { redirectUri: string; state: string; codeVerifier: string; nonce: string }) {
+    return { url: `https://issuer.example/authorize?state=${input.state}&nonce=${input.nonce}`, codeChallenge: "cc" };
   }
 
   async handleCallback() {
@@ -39,7 +39,7 @@ function makeDeps(overrides: Partial<GatewayDeps> = {}): GatewayDeps {
     oidc: new OidcAdapter(OIDC_CONFIG, new MockIssuerPort({ sub: "sub-1", email: "alice@redesignhealth.com" })),
     bindings,
     credentials: new EnvAgentCredentialStore({
-      PAPERCLIP_AGENT_KEY__agent_alice_cfo: "key-alice",
+      [EnvAgentCredentialStore.envVarNameFor("agent-alice-cfo")]: "key-alice",
     } as NodeJS.ProcessEnv),
     sessions: new InMemorySessionStore(),
     paperclipClientFor: (_agentId: string, apiKey: string): PaperclipClient =>
@@ -138,5 +138,42 @@ describe("transport-web server", () => {
       headers: { cookie: `${sessionCookie.name}=${sessionCookie.value}` },
     });
     expect(res.statusCode).toBe(403);
+  });
+
+  it("OIDC callback error taxonomy: an unexpected (non-policy) error maps to 502, not a misleading 403", async () => {
+    class ThrowingIssuerPort implements OidcPort {
+      async buildAuthorizationUrl(input: { redirectUri: string; state: string; codeVerifier: string; nonce: string }) {
+        return { url: `https://issuer.example/authorize?state=${input.state}`, codeChallenge: "cc" };
+      }
+      async handleCallback(): Promise<never> {
+        throw new Error("discovery endpoint unreachable");
+      }
+    }
+    deps = makeDeps({ oidc: new OidcAdapter(OIDC_CONFIG, new ThrowingIssuerPort()) });
+    const app = await buildServer({ deps });
+    const login = await app.inject({ method: "GET", url: "/auth/login" });
+    const cookieHeader = login.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+
+    const callback = await app.inject({
+      method: "GET",
+      url: "/auth/callback?code=abc&state=whatever",
+      headers: { cookie: cookieHeader },
+    });
+    expect(callback.statusCode).toBe(502);
+  });
+
+  it("does not trust forwarded headers by default (trustProxy unset)", async () => {
+    const app = await buildServer({ deps });
+    const res = await app.inject({
+      method: "GET",
+      url: "/health",
+      headers: { "x-forwarded-host": "evil.example", "x-forwarded-proto": "http" },
+    });
+    // Fastify only exposes req.hostname/protocol from forwarded headers when
+    // trustProxy is configured; this is an indirect but effective way to
+    // confirm the default posture is "don't trust them" without reaching
+    // into Fastify internals.
+    expect(app.initialConfig.trustProxy).toBeFalsy();
+    expect(res.statusCode).toBe(200);
   });
 });

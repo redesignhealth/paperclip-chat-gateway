@@ -6,6 +6,8 @@
  * against, with upstream file references.
  */
 
+import { z } from "zod";
+
 export interface PaperclipIssueComment {
   id: string;
   body: string;
@@ -50,6 +52,34 @@ export interface PaperclipClient {
   listComments(issueId: string): Promise<PaperclipIssueComment[]>;
   getActiveRun(issueId: string): Promise<ActiveRun | null>;
 }
+
+/**
+ * Runtime shape validation for everything Paperclip returns. This project's
+ * convention is "zod at every boundary"; without this, upstream API drift
+ * (a renamed/removed field) would silently propagate an `undefined` deep
+ * into the UI instead of failing loudly at the one place that talks HTTP.
+ */
+const paperclipIssueSchema = z.object({
+  id: z.string(),
+  companyId: z.string(),
+  title: z.string(),
+  status: z.string(),
+  assigneeAgentId: z.string().nullable(),
+}) satisfies z.ZodType<PaperclipIssue>;
+
+const paperclipIssueCommentSchema = z.object({
+  id: z.string(),
+  body: z.string(),
+  authorType: z.string(),
+  createdAt: z.string(),
+}) satisfies z.ZodType<PaperclipIssueComment>;
+
+const activeRunSchema = z.object({
+  id: z.string(),
+  status: z.string(),
+  agentId: z.string(),
+  lastOutputAt: z.string().nullable(),
+}) satisfies z.ZodType<ActiveRun>;
 
 export class PaperclipApiError extends Error {
   constructor(
@@ -97,7 +127,7 @@ export class HttpPaperclipClient implements PaperclipClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  private async request<T>(path: string, init?: RequestInit): Promise<T> {
+  private async request<T>(path: string, schema: z.ZodType<T>, init?: RequestInit): Promise<T> {
     const response = await this.fetchImpl(`${this.options.baseUrl}${path}`, {
       ...init,
       headers: {
@@ -110,38 +140,53 @@ export class HttpPaperclipClient implements PaperclipClient {
       const body = await response.json().catch(() => null);
       throw new PaperclipApiError(response.status, body, `Paperclip API request to ${path} failed with ${response.status}`);
     }
-    return (await response.json()) as T;
+    const json = await response.json();
+    const parsed = schema.safeParse(json);
+    if (!parsed.success) {
+      throw new PaperclipApiError(
+        response.status,
+        json,
+        `Paperclip API response from ${path} did not match the expected shape: ${parsed.error.message}`,
+      );
+    }
+    return parsed.data;
   }
 
   async getIssue(issueId: string): Promise<PaperclipIssue | null> {
     try {
-      return await this.request<PaperclipIssue>(`/issues/${encodeURIComponent(issueId)}`);
+      return await this.request(`/issues/${encodeURIComponent(issueId)}`, paperclipIssueSchema);
     } catch (error) {
       if (error instanceof PaperclipApiError && error.status === 404) return null;
       throw error;
     }
   }
 
-  async createConversationIssue(_input: { agentId: string; title: string }): Promise<PaperclipIssue> {
+  async createConversationIssue(input: { agentId: string; title: string }): Promise<PaperclipIssue> {
     throw new NotImplementedError(
-      "createConversationIssue requires upstream issue-creation fields (companyId, project/goal " +
-        "linkage) not yet finalized against a real Paperclip deployment. See docs/paperclip-api.md.",
+      `createConversationIssue(agentId="${input.agentId}") requires upstream issue-creation fields ` +
+        "(companyId, project/goal linkage) not yet finalized against a real Paperclip deployment. " +
+        "See docs/paperclip-api.md.",
     );
   }
 
   async postComment(input: PostCommentInput): Promise<PaperclipIssueComment> {
-    return this.request<PaperclipIssueComment>(`/issues/${encodeURIComponent(input.issueId)}/comments`, {
+    return this.request(`/issues/${encodeURIComponent(input.issueId)}/comments`, paperclipIssueCommentSchema, {
       method: "POST",
       body: JSON.stringify({ body: input.body, resume: input.resume }),
     });
   }
 
   async listComments(issueId: string): Promise<PaperclipIssueComment[]> {
-    return this.request<PaperclipIssueComment[]>(`/issues/${encodeURIComponent(issueId)}/comments`);
+    return this.request(`/issues/${encodeURIComponent(issueId)}/comments`, z.array(paperclipIssueCommentSchema));
   }
 
   async getActiveRun(issueId: string): Promise<ActiveRun | null> {
-    return this.request<ActiveRun | null>(`/issues/${encodeURIComponent(issueId)}/active-run`);
+    try {
+      return await this.request(`/issues/${encodeURIComponent(issueId)}/active-run`, activeRunSchema.nullable());
+    } catch (error) {
+      if (error instanceof PaperclipApiError && error.status === 404) return null;
+      throw error;
+    }
   }
 }
 

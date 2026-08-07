@@ -27,9 +27,17 @@ export interface ChatSession {
  * Deterministic, collision-resistant key for an (employee, agent) pair.
  * Used by session lookup/creation so "does this pair already have an
  * issue?" is a stable, cacheable question.
+ *
+ * `employeeId`/`agentId` are percent-encoded before interpolation so a
+ * crafted id containing the literal delimiter text (e.g. an agentId of
+ * `"agent:x"`) can never be engineered to collide two distinct pairs onto
+ * the same key. `encodeURIComponent` escapes `:` (and every other
+ * character outside its narrow unreserved set), so the only way `:` can
+ * appear in the resulting string is as one of the two fixed delimiters
+ * this function itself inserts.
  */
 export function sessionKeyFor(employeeId: string, agentId: string): string {
-  return `employee:${employeeId}:agent:${agentId}`;
+  return `employee:${encodeURIComponent(employeeId)}:agent:${encodeURIComponent(agentId)}`;
 }
 
 /**

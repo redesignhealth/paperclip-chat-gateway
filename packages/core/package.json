@@ -14,8 +14,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "zod": "^3.24.1",
-    "pino": "^9.6.0"
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "typescript": "^5.7.3"

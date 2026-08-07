@@ -42,6 +42,17 @@ export class DuplicateEmployeeBindingError extends Error {
   }
 }
 
+export class DuplicateAgentBindingError extends Error {
+  constructor(agentId: string) {
+    super(
+      `Agent "${agentId}" is bound to more than one employee. This gateway enforces a strict 1:1 ` +
+        "employee-to-agent binding in both directions; duplicate entries are rejected at load time " +
+        "rather than silently letting one agent serve multiple employees.",
+    );
+    this.name = "DuplicateAgentBindingError";
+  }
+}
+
 export class BindingTable {
   private readonly byEmployeeId: ReadonlyMap<string, string>;
 
@@ -52,15 +63,22 @@ export class BindingTable {
   /**
    * Parses and validates raw config (e.g. `JSON.parse`d env var or file
    * contents) into a BindingTable. Throws on malformed shape or duplicate
-   * employee entries — fail closed, never fail open.
+   * employee/agent entries — fail closed, never fail open. The 1:1
+   * invariant is enforced in both directions: no employee may have two
+   * bindings, and no agent may be bound to two employees.
    */
   static fromConfig(raw: unknown): BindingTable {
     const parsed = bindingTableConfigSchema.parse(raw);
     const map = new Map<string, string>();
+    const seenAgentIds = new Set<string>();
     for (const entry of parsed.bindings) {
       if (map.has(entry.employeeId)) {
         throw new DuplicateEmployeeBindingError(entry.employeeId);
       }
+      if (seenAgentIds.has(entry.agentId)) {
+        throw new DuplicateAgentBindingError(entry.agentId);
+      }
+      seenAgentIds.add(entry.agentId);
       map.set(entry.employeeId, entry.agentId);
     }
     return new BindingTable(map);

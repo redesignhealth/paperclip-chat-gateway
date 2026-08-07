@@ -26,8 +26,18 @@ FROM node:22.12.0-bookworm-slim AS runtime
 RUN groupadd --system gateway && useradd --system --gid gateway --home-dir /app gateway
 WORKDIR /app
 COPY --from=build --chown=gateway:gateway /app/deploy ./
-COPY --from=build --chown=gateway:gateway /app/packages/transport-web/ui/dist ./packages/transport-web/ui/dist
+# The gateway resolves the UI dist directory at startup via Node module
+# resolution against @paperclip-chat-gateway/transport-web's own
+# package.json (see apps/gateway/src/ui-dist.ts), then appends `ui/dist`.
+# That means the built UI must live at `ui/dist` *relative to wherever
+# `pnpm deploy` materialized that package* — i.e. inside its node_modules
+# entry, not at some other path that happens to look plausible from the
+# repo's source layout. Get this wrong and `assertUiDistExists` fails fast
+# at startup with a clear error instead of a runtime 404 on every page load.
+COPY --from=build --chown=gateway:gateway /app/packages/transport-web/ui/dist ./node_modules/@paperclip-chat-gateway/transport-web/ui/dist
 ENV NODE_ENV=production
 USER gateway
 EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "dist/index.js"]

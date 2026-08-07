@@ -40,10 +40,32 @@ export async function loadGatewayConfigFile(filePath: string): Promise<GatewayCo
   } catch (error) {
     throw new GatewayConfigError(`Could not read gateway config file at "${filePath}": ${(error as Error).message}`);
   }
-  const parsed = gatewayConfigFileSchema.safeParse(JSON.parse(contents));
+
+  let json: unknown;
+  try {
+    json = JSON.parse(contents);
+  } catch (error) {
+    throw new GatewayConfigError(`Gateway config file at "${filePath}" is not valid JSON: ${(error as Error).message}`);
+  }
+
+  const parsed = gatewayConfigFileSchema.safeParse(json);
   if (!parsed.success) {
     throw new GatewayConfigError(`Invalid gateway config file at "${filePath}": ${parsed.error.message}`);
   }
+
+  // Cross-validation: a binding for an employeeId not in the roster is a
+  // config typo that would otherwise surface as a confusing runtime 403
+  // instead of failing closed at boot, same as BindingTable's own
+  // duplicate-entry checks.
+  const employeeIds = new Set(parsed.data.employees.map((e) => e.employeeId));
+  const unknownEmployeeIds = [...new Set(parsed.data.bindings.map((b) => b.employeeId).filter((id) => !employeeIds.has(id)))];
+  if (unknownEmployeeIds.length > 0) {
+    throw new GatewayConfigError(
+      `Gateway config file at "${filePath}" has bindings for employeeId(s) not present in "employees": ` +
+        `${unknownEmployeeIds.join(", ")}. Every binding must reference a known employee.`,
+    );
+  }
+
   return parsed.data;
 }
 
@@ -63,6 +85,17 @@ export interface AppEnv {
   OIDC_ALLOWED_EMAIL_DOMAINS: string;
   CREDENTIAL_STORE_KIND: "env" | "file";
   CREDENTIAL_STORE_FILE_PATH?: string;
+  /** Override for the UI static-assets directory; auto-resolved from the transport-web package when unset. */
+  UI_DIST_PATH?: string;
+  /**
+   * Fastify `trustProxy` setting, forwarded verbatim to `buildServer`.
+   * Leave unset (defaults to not trusting forwarded headers) unless this
+   * gateway sits behind a reverse proxy you control that strips
+   * client-supplied `X-Forwarded-*` headers before setting its own.
+   * Accepts a boolean ("true"/"false"), a single IP/CIDR, a comma-separated
+   * list of them, or a hop count (an integer).
+   */
+  TRUST_PROXY?: string;
 }
 
 const appEnvSchema = z.object({
@@ -77,7 +110,22 @@ const appEnvSchema = z.object({
   OIDC_ALLOWED_EMAIL_DOMAINS: z.string().min(1),
   CREDENTIAL_STORE_KIND: z.enum(["env", "file"]).default("env"),
   CREDENTIAL_STORE_FILE_PATH: z.string().optional(),
+  UI_DIST_PATH: z.string().optional(),
+  TRUST_PROXY: z.string().optional(),
 });
+
+/** Parses AppEnv.TRUST_PROXY into the shape Fastify's trustProxy option expects. */
+export function parseTrustProxy(value: string | undefined): boolean | string | string[] | number | undefined {
+  if (value === undefined || value === "") return undefined;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (/^\d+$/.test(value)) return Number(value);
+  const items = value
+    .split(",")
+    .map((v) => v.trim())
+    .filter((v) => v.length > 0);
+  return items.length === 1 ? items[0] : items;
+}
 
 export function loadAppEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {
   const parsed = appEnvSchema.safeParse(env);

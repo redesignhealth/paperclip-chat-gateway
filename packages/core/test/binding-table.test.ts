@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BindingTable, DuplicateEmployeeBindingError } from "../src/binding-table.js";
+import { BindingTable, DuplicateAgentBindingError, DuplicateEmployeeBindingError } from "../src/binding-table.js";
 
 describe("BindingTable", () => {
   const table = BindingTable.fromConfig({
@@ -46,6 +46,17 @@ describe("BindingTable", () => {
         ],
       }),
     ).toThrow(DuplicateEmployeeBindingError);
+  });
+
+  it("rejects config with duplicate agent bindings at load time (1:1 must hold in both directions)", () => {
+    expect(() =>
+      BindingTable.fromConfig({
+        bindings: [
+          { employeeId: "emp-alice", agentId: "agent-shared" },
+          { employeeId: "emp-bob", agentId: "agent-shared" },
+        ],
+      }),
+    ).toThrow(DuplicateAgentBindingError);
   });
 
   it("rejects malformed config shape", () => {

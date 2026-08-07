@@ -63,12 +63,18 @@ auth adapter or transport ships next.
   `null`, not another agent's key.
 - Login from outside an approved identity population. The OIDC adapter
   enforces an allowed-email-domain list before `IdentityResolver` is even
-  consulted, and refuses to start with an empty (unrestricted) allow-list
-  outside explicit local-dev opt-in.
+  consulted, and requires the identity provider to assert `email_verified`
+  on that email. `loadOidcConfigFromEnv` refuses to start with an empty
+  (unrestricted) allow-list unless a caller explicitly passes
+  `allowUnrestrictedDomains: true` — this gateway's own composition root
+  (`apps/gateway`) never does, so there is currently no env var or flag
+  that disables this check without a code change.
 - API drift silently breaking delivery. All Paperclip HTTP calls go through
   one `PaperclipClient` interface (`docs/paperclip-api.md` documents
-  exactly what it's coded against), so a shape change is a one-file fix
-  with contract tests that fail loudly.
+  exactly what it's coded against), and every response is validated against
+  a zod schema at that one boundary, so a shape change fails loudly there —
+  with contract tests — instead of propagating an `undefined` deep into the
+  UI.
 
 **What this gateway does *not* protect against:**
 
@@ -148,8 +154,12 @@ see the dependency policy in the v1 scaffold PR for why.
 
 Early. Built in the open from day one. v1 scaffold: core security kernel,
 OIDC auth, and a minimal web transport are real; a few integration points
-(issue creation, live-run streaming) are documented gaps — see
-`docs/paperclip-api.md`.
+are documented gaps:
+
+- Issue creation and live-run streaming — see `docs/paperclip-api.md`.
+- The SSM-backed (or other secret-manager-backed) `AgentCredentialStore`
+  mentioned as a future swap-in doesn't exist yet; v1 ships only the
+  env-var- and file-backed implementations in `packages/core`.
 
 ## License
 

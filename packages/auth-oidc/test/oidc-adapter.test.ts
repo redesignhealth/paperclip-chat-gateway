@@ -25,14 +25,14 @@ class MockIssuerPort implements OidcPort {
     private readonly claims: { sub: string; email?: string; name?: string } | null,
   ) {}
 
-  async buildAuthorizationUrl(input: { redirectUri: string; state: string; codeVerifier: string }) {
+  async buildAuthorizationUrl(input: { redirectUri: string; state: string; codeVerifier: string; nonce: string }) {
     return {
-      url: `https://issuer.example/authorize?state=${input.state}&redirect_uri=${encodeURIComponent(input.redirectUri)}`,
+      url: `https://issuer.example/authorize?state=${input.state}&nonce=${input.nonce}&redirect_uri=${encodeURIComponent(input.redirectUri)}`,
       codeChallenge: `challenge-for-${input.codeVerifier}`,
     };
   }
 
-  async handleCallback(_input: { currentUrl: URL; expectedState: string; codeVerifier: string }) {
+  async handleCallback(_input: { currentUrl: URL; expectedState: string; codeVerifier: string; expectedNonce?: string }) {
     if (!this.claims) {
       throw new Error("mock issuer: invalid code");
     }
@@ -41,13 +41,15 @@ class MockIssuerPort implements OidcPort {
 }
 
 describe("OidcAdapter", () => {
-  it("happy path: builds an authorization URL carrying state and redirect_uri", async () => {
+  it("happy path: builds an authorization URL carrying state, nonce, and redirect_uri", async () => {
     const adapter = new OidcAdapter(baseConfig, new MockIssuerPort({ sub: "sub-1", email: "a@redesignhealth.com" }));
     const login = await adapter.startLogin();
 
     expect(login.authorizationUrl).toContain(`state=${login.state}`);
+    expect(login.authorizationUrl).toContain(`nonce=${login.nonce}`);
     expect(login.authorizationUrl).toContain(encodeURIComponent(baseConfig.redirectUri));
     expect(login.codeVerifier).toBeTruthy();
+    expect(login.nonce).toBeTruthy();
   });
 
   it("happy path: callback with an allowed email domain resolves EmployeeClaims", async () => {

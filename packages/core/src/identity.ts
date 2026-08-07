@@ -47,13 +47,28 @@ export interface ConfigEmployee extends Employee {
  * of narrowly-bound agents, and an explicit list keeps "who can possibly
  * reach an agent at all" auditable in one place, upstream of BindingTable.
  */
+export class DuplicateEmployeeEmailError extends Error {
+  constructor(email: string) {
+    super(
+      `The employee roster has more than one entry for email "${email}" (case-insensitive). ` +
+        "Refusing to load: silently picking one would make it ambiguous which employee a login " +
+        "resolves to, which is exactly the kind of identity ambiguity this gateway is built to avoid.",
+    );
+    this.name = "DuplicateEmployeeEmailError";
+  }
+}
+
 export class ConfigIdentityResolver implements IdentityResolver {
   private readonly byEmail: ReadonlyMap<string, ConfigEmployee>;
 
   constructor(employees: readonly ConfigEmployee[]) {
     const map = new Map<string, ConfigEmployee>();
     for (const employee of employees) {
-      map.set(employee.email.toLowerCase(), employee);
+      const key = employee.email.toLowerCase();
+      if (map.has(key)) {
+        throw new DuplicateEmployeeEmailError(employee.email);
+      }
+      map.set(key, employee);
     }
     this.byEmail = map;
   }

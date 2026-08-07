@@ -1,5 +1,3 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   BindingTable,
   ConfigIdentityResolver,
@@ -11,9 +9,8 @@ import {
 } from "@paperclip-chat-gateway/core";
 import { loadOidcConfigFromEnv, OidcAdapter, RealOidcPort } from "@paperclip-chat-gateway/auth-oidc";
 import { buildServer, type GatewayDeps } from "@paperclip-chat-gateway/transport-web";
-import { loadAppEnv, loadGatewayConfigFile, toConfigEmployees } from "./config.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { loadAppEnv, loadGatewayConfigFile, parseTrustProxy, toConfigEmployees } from "./config.js";
+import { assertUiDistExists, resolveUiDistPath } from "./ui-dist.js";
 
 async function main() {
   const env = loadAppEnv();
@@ -31,7 +28,30 @@ async function main() {
         )
       : new EnvAgentCredentialStore();
 
-  const oidcConfig = loadOidcConfigFromEnv({ env: process.env });
+  // Fail closed at boot, not at request time: a bound agentId with no
+  // configured credential would otherwise surface as a confusing 503 on
+  // whichever employee happens to message it first.
+  const distinctAgentIds = [...new Set(gatewayConfig.bindings.map((b) => b.agentId))];
+  const missingCredentialAgentIds: string[] = [];
+  for (const agentId of distinctAgentIds) {
+    const key = await credentials.getKeyFor(agentId);
+    if (!key) missingCredentialAgentIds.push(agentId);
+  }
+  if (missingCredentialAgentIds.length > 0) {
+    throw new Error(
+      `No credential is configured for bound agent(s): ${missingCredentialAgentIds.join(", ")}. Configure ` +
+        "PAPERCLIP_AGENT_KEY__<encoded agentId> (env store) or add them to the credential file (file store) " +
+        "before starting.",
+    );
+  }
+
+  // loadOidcConfigFromEnv re-validates a subset of the same env vars
+  // appEnvSchema already validated; passing the already-loaded `env` object
+  // (rather than raw `process.env`) at least ensures both validations see
+  // the exact same values, instead of two independently-evolving schemas
+  // that could silently diverge if `env` is ever transformed before this
+  // point.
+  const oidcConfig = loadOidcConfigFromEnv({ env: env as unknown as NodeJS.ProcessEnv });
   const oidc = new OidcAdapter(
     oidcConfig,
     new RealOidcPort({
@@ -56,8 +76,10 @@ async function main() {
     },
   };
 
-  const uiDistPath = path.resolve(__dirname, "../../transport-web/ui/dist");
-  const app = await buildServer({ deps, uiDistPath });
+  const uiDistPath = resolveUiDistPath({ override: env.UI_DIST_PATH });
+  await assertUiDistExists(uiDistPath);
+
+  const app = await buildServer({ deps, uiDistPath, trustProxy: parseTrustProxy(env.TRUST_PROXY) });
 
   const port = Number(env.PORT);
   await app.listen({ port, host: "0.0.0.0" });

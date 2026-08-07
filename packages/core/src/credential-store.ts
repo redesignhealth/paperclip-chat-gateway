@@ -15,26 +15,35 @@ export interface AgentCredentialStore {
   getKeyFor(agentId: string): Promise<string | null>;
 }
 
-export class UnknownAgentCredentialError extends Error {
-  constructor(agentId: string) {
-    super(`No Paperclip API key is configured for agent "${agentId}".`);
-    this.name = "UnknownAgentCredentialError";
-  }
-}
-
 /**
  * v1 implementation: keys come from environment variables, one per agent,
- * named `PAPERCLIP_AGENT_KEY__<agentId>` with non-alphanumeric characters
- * in `agentId` normalized to `_`. This is deliberately simple and
- * inspectable — swap it for an SSM-backed (or other secret-manager-backed)
- * implementation later behind the same interface without touching callers.
+ * named `PAPERCLIP_AGENT_KEY__<encoded agentId>`.
+ *
+ * The encoding is an injective (collision-free) escape, not a blanket
+ * "replace every non-alphanumeric character with `_`" normalization: every
+ * alphanumeric character in `agentId` passes through unchanged, and every
+ * other character — including a literal `_` — is escaped to `_XX` where
+ * `XX` is its lowercase hex char code. Because alphanumeric characters
+ * never start with `_`, the escaped form is unambiguously decodable, which
+ * means the encoding is provably injective: two distinct agentIds can
+ * never map to the same env var name. (A naive "collapse everything to
+ * `_`" scheme let `agent-alice`, `agent.alice`, and `agent_alice` all
+ * collide on `PAPERCLIP_AGENT_KEY__agent_alice` — i.e. it could hand one
+ * agent's key to a lookup for a completely different agent.)
  */
 export class EnvAgentCredentialStore implements AgentCredentialStore {
   constructor(private readonly env: NodeJS.ProcessEnv = process.env) {}
 
   static envVarNameFor(agentId: string): string {
-    const normalized = agentId.replace(/[^a-zA-Z0-9]/g, "_");
-    return `PAPERCLIP_AGENT_KEY__${normalized}`;
+    let encoded = "";
+    for (const char of agentId) {
+      if (/[a-zA-Z0-9]/.test(char)) {
+        encoded += char;
+      } else {
+        encoded += `_${char.charCodeAt(0).toString(16).padStart(2, "0")}`;
+      }
+    }
+    return `PAPERCLIP_AGENT_KEY__${encoded}`;
   }
 
   async getKeyFor(agentId: string): Promise<string | null> {

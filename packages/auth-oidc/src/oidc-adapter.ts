@@ -22,6 +22,8 @@ export interface LoginStart {
   /** Opaque values the transport adapter must persist (e.g. in a signed cookie) and echo back on callback. */
   state: string;
   codeVerifier: string;
+  /** ID-token replay defense-in-depth, alongside state+PKCE. Must be echoed back into handleCallback. */
+  nonce: string;
 }
 
 /**
@@ -46,21 +48,30 @@ export class OidcAdapter {
   async startLogin(): Promise<LoginStart> {
     const state = randomBytes(32).toString("base64url");
     const codeVerifier = randomBytes(32).toString("base64url");
+    const nonce = randomBytes(32).toString("base64url");
     const { url } = await this.port.buildAuthorizationUrl({
       redirectUri: this.config.redirectUri,
       state,
       codeVerifier,
+      nonce,
     });
-    return { authorizationUrl: url, state, codeVerifier };
+    return { authorizationUrl: url, state, codeVerifier, nonce };
   }
 
   /**
    * Completes the callback and returns verified, domain-checked claims
    * ready for IdentityResolver. Throws EmailDomainNotAllowedError /
-   * MissingEmailClaimError on the sad paths — callers should map those to
-   * 403s, not 500s.
+   * MissingEmailClaimError / EmailNotVerifiedError on the sad paths —
+   * callers should map those to 403s, not 500s (everything else is an
+   * infrastructure failure and should map to a 5xx instead, see
+   * routes/auth.ts).
    */
-  async handleCallback(input: { currentUrl: URL; expectedState: string; codeVerifier: string }): Promise<EmployeeClaims> {
+  async handleCallback(input: {
+    currentUrl: URL;
+    expectedState: string;
+    codeVerifier: string;
+    expectedNonce?: string;
+  }): Promise<EmployeeClaims> {
     const result = await this.port.handleCallback(input);
 
     if (!result.email) {
