@@ -222,6 +222,23 @@ describe("verifyAgentRunToken — fails closed", () => {
     await expect(verifyAgentRunToken(token, baseConfig)).rejects.toThrow(/unsupported algorithm/);
   });
 
+  it("sanitizes an attacker-controlled alg header before it reaches the error message (cap + strip control chars)", async () => {
+    const maliciousAlg = `HS256-evil\nINJECTED-LINE-${"x".repeat(100)}`;
+    const header = { alg: maliciousAlg, typ: "JWT" };
+    const claims = { sub: "agent-alice-cfo", company_id: "company-1", run_id: "run-1", exp: Math.floor(Date.now() / 1000) + 3600 };
+    const token = `${base64UrlEncodeJson(header)}.${base64UrlEncodeJson(claims)}.deadbeef`;
+    let thrown: unknown;
+    try {
+      await verifyAgentRunToken(token, baseConfig);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(AgentTokenVerificationError);
+    const message = (thrown as Error).message;
+    expect(message).not.toContain("\n");
+    expect(message.length).toBeLessThan(200);
+  });
+
   it("rejects a token missing the run_id claim", async () => {
     const now = Math.floor(Date.now() / 1000);
     const header = { alg: "HS256", typ: "JWT" };
@@ -253,6 +270,13 @@ describe("verifyAgentRunToken — fails closed", () => {
 
   it("rejects an issuer mismatch when an issuer is configured", async () => {
     const token = mintToken(MASTER_SECRET, INSTANCE_ID, { iss: "someone-else" });
+    await expect(verifyAgentRunToken(token, { ...baseConfig, issuer: "paperclip" })).rejects.toThrow(
+      AgentTokenVerificationError,
+    );
+  });
+
+  it("fail-closed: rejects a token with NO iss claim at all once an issuer is configured, not just a mismatched one", async () => {
+    const token = mintToken(MASTER_SECRET, INSTANCE_ID); // no `iss` claim
     await expect(verifyAgentRunToken(token, { ...baseConfig, issuer: "paperclip" })).rejects.toThrow(
       AgentTokenVerificationError,
     );

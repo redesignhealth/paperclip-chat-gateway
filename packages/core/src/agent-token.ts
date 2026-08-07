@@ -94,7 +94,12 @@ export interface AgentTokenConfig {
    * tokens from a non-default Paperclip instance.
    */
   instanceId?: string;
-  /** If set, reject tokens whose `iss` claim (when present) doesn't match. */
+  /**
+   * If set, every token MUST carry an `iss` claim equal to this value —
+   * fail-closed. A token with no `iss` claim at all is rejected once this
+   * is configured, the same as a token whose `iss` doesn't match; there is
+   * no "only check it when present" leniency here.
+   */
   issuer?: string;
   /**
    * If set, reject tokens whose `aud` claim doesn't include this value.
@@ -125,6 +130,8 @@ export interface AgentTokenConfig {
    * the past, independent of `exp`. Useful as a defense-in-depth bound
    * against an unusually long-lived token even if the issuer's own `exp`
    * horizon is generous. Unset by default (no additional bound beyond `exp`).
+   * The effective bound is `maxTokenAgeSeconds + clockToleranceSeconds`:
+   * `clockToleranceSeconds` is added on top, same as it is for `exp`/`nbf`.
    */
   maxTokenAgeSeconds?: number;
 }
@@ -202,7 +209,13 @@ export async function verifyAgentRunToken(token: string, config: AgentTokenConfi
   // key derivation, so an attacker can never induce this code into treating
   // an unsigned or wrongly-signed-algorithm token as authenticated.
   if (header.alg !== JWT_ALGORITHM) {
-    throw new AgentTokenVerificationError(`unsupported algorithm "${header.alg}" — only ${JWT_ALGORITHM} is accepted`);
+    // header.alg is attacker-controlled (it comes from the unverified JWT
+    // header) and flows into this error message, which callers may log —
+    // cap and strip control characters before interpolating it so a
+    // malicious `alg` value can't be used to inject newlines/escape
+    // sequences into log output.
+    const safeAlg = String(header.alg).replace(/[\x00-\x1f\x7f]/g, "").slice(0, 40);
+    throw new AgentTokenVerificationError(`unsupported algorithm "${safeAlg}" — only ${JWT_ALGORITHM} is accepted`);
   }
 
   let unverifiedClaims: Record<string, unknown>;

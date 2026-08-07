@@ -7,7 +7,12 @@ const BEARER_PREFIX = "Bearer ";
 
 function extractBearerToken(req: FastifyRequest): string | null {
   const header = req.headers.authorization;
-  if (!header || !header.startsWith(BEARER_PREFIX)) return null;
+  // RFC 7235 auth-scheme names are case-insensitive ("Bearer" vs "bearer"),
+  // so match the prefix case-insensitively rather than requiring the exact
+  // casing Paperclip's own client happens to send today.
+  if (!header || header.length < BEARER_PREFIX.length || header.slice(0, BEARER_PREFIX.length).toLowerCase() !== BEARER_PREFIX.toLowerCase()) {
+    return null;
+  }
   const token = header.slice(BEARER_PREFIX.length).trim();
   return token.length > 0 ? token : null;
 }
@@ -75,6 +80,17 @@ async function authenticateAgentCall(
   return { agentId: verified.agentId, runId: verified.runId, employeeId };
 }
 
+/** Mirrors `chat.ts`'s `sendMessageSchema` body bound (`.max(8000)`). */
+const MAX_ACTION_LENGTH = 8000;
+
+/**
+ * `payload` is opaque (see below) so it can't be bounded by shape, only by
+ * serialized size — this caps it well under Fastify's default 1MiB
+ * `bodyLimit` so a single oversized-but-still-parseable payload can't be
+ * used to pressure downstream services or this process's memory.
+ */
+const MAX_PAYLOAD_BYTES = 32 * 1024;
+
 /**
  * Deliberately generic: the downstream scheduler's real request/response
  * vocabulary is not known from source (see README's "Open transport
@@ -83,8 +99,13 @@ async function authenticateAgentCall(
  * opaque payload — rather than inventing scheduler-specific fields.
  */
 const brokerRequestSchema = z.object({
-  action: z.string().min(1),
-  payload: z.unknown().optional(),
+  action: z.string().min(1).max(MAX_ACTION_LENGTH),
+  payload: z
+    .unknown()
+    .optional()
+    .refine((value) => value === undefined || Buffer.byteLength(JSON.stringify(value) ?? "", "utf8") <= MAX_PAYLOAD_BYTES, {
+      message: `payload must serialize to at most ${MAX_PAYLOAD_BYTES} bytes`,
+    }),
 });
 
 /**

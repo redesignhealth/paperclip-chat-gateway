@@ -99,7 +99,8 @@ startup — it disables this whole feature. A gateway deployment with no
 agent-broker settings starts normally with `/api/agent/scheduler` simply
 not registered (404, not 401/501). Setting `AGENT_JWT_SECRET` turns the
 broker on and triggers strict validation of `AGENT_JWT_COMPANY_ID` (required)
-and `AGENT_JWT_ISSUER`/`AGENT_JWT_AUDIENCE` (at least one required) at boot
+and `AGENT_JWT_ISSUER`/`AGENT_JWT_AUDIENCE` (both required — a two-dimensional
+binding; requiring only one would collapse that defense-in-depth) at boot
 — see `apps/gateway/.env.example` for the full set of `AGENT_JWT_*` settings
 and `apps/gateway/src/index.ts` for the startup log line that states plainly
 which mode (`ENABLED`/`DISABLED`) a running instance is in.
@@ -196,9 +197,21 @@ as `HttpPaperclipClient`.
   domains you've allow-listed.
 - A compromised agent. This gateway controls who can *reach* an agent, not
   what that agent does once woken — run agents in Paperclip's protected
-  mode and apply Paperclip's own permission model for that.
+  mode and apply Paperclip's own permission model for that. Once the
+  agent-facing broker is enabled, this cuts both ways: a compromised agent
+  run can impersonate the human it's bound to for every call it makes
+  through `/api/agent/scheduler` until its token's `exp`, with no
+  per-agent/per-action allowlist yet limiting what it can ask the
+  downstream scheduler to do (tracked as future work, not this PR).
 - Availability / DoS. There's no rate limiting in v1. Don't expose this
-  directly to the internet without a reverse proxy that has some.
+  directly to the internet without a reverse proxy that has some. This
+  applies with extra force to `/api/agent/scheduler` when the broker is
+  enabled: every call to it does real HMAC verification work pre-auth,
+  before any binding lookup, with no rate limiting of its own.
+- Compromise of `AGENT_JWT_SECRET`. Unlike a leaked human session, this is
+  a *minting* secret for the agent broker (see "Trust model" above):
+  anything that has it can mint tokens this gateway accepts as any agent,
+  for any run, not just replay an existing one.
 - Message content inspection. The gateway relays message bodies verbatim;
   it does not scan, redact, or moderate content.
 - Anything about how the per-agent Paperclip key was minted or approved.

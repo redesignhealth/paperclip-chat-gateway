@@ -63,7 +63,14 @@
         { "name": "OIDC_ISSUER_URL", "value": "<OIDC_ISSUER_URL>" },
         { "name": "OIDC_REDIRECT_URI", "value": "<OIDC_REDIRECT_URI>" },
         { "name": "OIDC_ALLOWED_EMAIL_DOMAINS", "value": "<OIDC_ALLOWED_EMAIL_DOMAINS>" },
-        { "name": "CREDENTIAL_STORE_KIND", "value": "env" }
+        { "name": "CREDENTIAL_STORE_KIND", "value": "env" },
+        {
+          "name": "AGENT_JWT_COMPANY_ID",
+          "value": "<AGENT_JWT_COMPANY_ID>",
+          "_comment": "Agent-facing identity broker (OPT-IN) -- only needed if this deployment brokers agent calls (POST /api/agent/scheduler). Omit this whole AGENT_JWT_* block and AGENT_JWT_SECRET below to leave the broker disabled. See apps/gateway/.env.example and README 'Trust model'."
+        },
+        { "name": "AGENT_JWT_ISSUER", "value": "<AGENT_JWT_ISSUER>" },
+        { "name": "AGENT_JWT_AUDIENCE", "value": "<AGENT_JWT_AUDIENCE>" }
       ],
       "secrets": [
         { "name": "COOKIE_SECRET", "valueFrom": "<COOKIE_SECRET_SSM_ARN>" },
@@ -73,6 +80,11 @@
           "name": "PAPERCLIP_AGENT_KEY__<ENCODED_AGENT_ID>",
           "valueFrom": "<PER_AGENT_KEY_SSM_ARN>",
           "_comment": "One entry per agentId referenced in the bindings table -- see EnvAgentCredentialStore.envVarNameFor() in packages/core for the exact name-encoding rule."
+        },
+        {
+          "name": "AGENT_JWT_SECRET",
+          "valueFrom": "<AGENT_JWT_SECRET_SSM_ARN>",
+          "_comment": "Agent-facing identity broker (OPT-IN) -- this is a minting-equivalent shared secret (must equal Paperclip's own PAPERCLIP_AGENT_JWT_SECRET/BETTER_AUTH_SECRET). SSM-backed like every other secret here -- never put it in the plaintext 'environment' block above. Omit entirely, along with the AGENT_JWT_* environment entries above, to leave the broker disabled."
         }
       ],
       "healthCheck": {

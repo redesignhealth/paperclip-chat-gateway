@@ -258,4 +258,84 @@ describe("POST /api/agent/scheduler — identity resolution and forwarding", () 
     });
     expect(res.statusCode).toBe(501);
   });
+
+  it("forwards a non-default forward() result verbatim", async () => {
+    const scheduler = new RecordingSchedulerClient(async () => ({ scheduled: true, slot: "2026-08-10T09:00:00Z" }));
+    const token = mintAgentToken({ sub: "agent-alice-cfo", runId: "run-1" });
+    const app = await buildServer({ deps: makeDeps({ schedulerClient: scheduler }) });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/agent/scheduler",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { action: "reschedule" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ scheduled: true, slot: "2026-08-10T09:00:00Z" });
+  });
+
+  it("accepts a lowercase \"bearer\" auth scheme (RFC 7235 scheme names are case-insensitive)", async () => {
+    const token = mintAgentToken({ sub: "agent-alice-cfo", runId: "run-1" });
+    const app = await buildServer({ deps: makeDeps() });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/agent/scheduler",
+      headers: { authorization: `bearer ${token}` },
+      payload: { action: "ping" },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+});
+
+describe("POST /api/agent/scheduler — request body bounds", () => {
+  it("rejects an action longer than 8000 characters", async () => {
+    const token = mintAgentToken({ sub: "agent-alice-cfo", runId: "run-1" });
+    const app = await buildServer({ deps: makeDeps() });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/agent/scheduler",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { action: "a".repeat(8001) },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("accepts an action of exactly 8000 characters", async () => {
+    const scheduler = new RecordingSchedulerClient();
+    const token = mintAgentToken({ sub: "agent-alice-cfo", runId: "run-1" });
+    const app = await buildServer({ deps: makeDeps({ schedulerClient: scheduler }) });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/agent/scheduler",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { action: "a".repeat(8000) },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("rejects a payload that serializes over the size bound", async () => {
+    const token = mintAgentToken({ sub: "agent-alice-cfo", runId: "run-1" });
+    const app = await buildServer({ deps: makeDeps() });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/agent/scheduler",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { action: "ping", payload: { blob: "x".repeat(40 * 1024) } },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("accepts a payload comfortably under the size bound", async () => {
+    const scheduler = new RecordingSchedulerClient();
+    const token = mintAgentToken({ sub: "agent-alice-cfo", runId: "run-1" });
+    const app = await buildServer({ deps: makeDeps({ schedulerClient: scheduler }) });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/agent/scheduler",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { action: "ping", payload: { when: "tomorrow" } },
+    });
+    expect(res.statusCode).toBe(200);
+  });
 });

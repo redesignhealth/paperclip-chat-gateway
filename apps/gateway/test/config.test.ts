@@ -154,6 +154,38 @@ describe("validateSchedulerBaseUrl", () => {
   it("rejects a malformed URL", () => {
     expect(validateSchedulerBaseUrl("not-a-url", false)).not.toBeNull();
   });
+
+  it("rejects the metadata.google.internal hostname by default", () => {
+    expect(validateSchedulerBaseUrl("https://metadata.google.internal/", false)).not.toBeNull();
+  });
+
+  describe("IPv6 loopback/link-local/unique-local coverage", () => {
+    it("rejects ::1 (IPv6 loopback) — URL.hostname serializes this as \"[::1]\", brackets included", () => {
+      expect(validateSchedulerBaseUrl("https://[::1]:8080", false)).not.toBeNull();
+    });
+
+    it("rejects ::ffff:127.0.0.1 (IPv4-mapped IPv6 loopback)", () => {
+      expect(validateSchedulerBaseUrl("https://[::ffff:127.0.0.1]:8080", false)).not.toBeNull();
+    });
+
+    it("rejects fe80::/10 link-local addresses", () => {
+      expect(validateSchedulerBaseUrl("https://[fe80::1]:8080", false)).not.toBeNull();
+      expect(validateSchedulerBaseUrl("https://[febf::1]:8080", false)).not.toBeNull();
+    });
+
+    it("rejects fc00::/7 unique-local addresses", () => {
+      expect(validateSchedulerBaseUrl("https://[fc00::1]:8080", false)).not.toBeNull();
+      expect(validateSchedulerBaseUrl("https://[fd12:3456::1]:8080", false)).not.toBeNull();
+    });
+
+    it("allows a normal global-unicast IPv6 address", () => {
+      expect(validateSchedulerBaseUrl("https://[2001:db8::1]:8080", false)).toBeNull();
+    });
+
+    it("allows IPv6 loopback when explicitly opted into for dev", () => {
+      expect(validateSchedulerBaseUrl("http://[::1]:8080", true)).toBeNull();
+    });
+  });
 });
 
 describe("isAgentBrokerEnabled", () => {
@@ -214,6 +246,40 @@ describe("loadAppEnv — agent broker is opt-in", () => {
     ).toThrow(GatewayConfigError);
   });
 
+  it("rejects an enabled broker with only AGENT_JWT_AUDIENCE set (AGENT_JWT_ISSUER missing) — both are required", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_SECRET: "a-secret-at-least-32-characters-long",
+        AGENT_JWT_COMPANY_ID: "company-1",
+        AGENT_JWT_AUDIENCE: "paperclip-api",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("rejects an enabled broker with only AGENT_JWT_ISSUER set (AGENT_JWT_AUDIENCE missing) — both are required", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_SECRET: "a-secret-at-least-32-characters-long",
+        AGENT_JWT_COMPANY_ID: "company-1",
+        AGENT_JWT_ISSUER: "paperclip",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("rejects an enabled broker whose AGENT_JWT_COMPANY_ID parses to an empty allowlist (e.g. a bare comma)", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_SECRET: "a-secret-at-least-32-characters-long",
+        AGENT_JWT_COMPANY_ID: ",",
+        AGENT_JWT_ISSUER: "paperclip",
+        AGENT_JWT_AUDIENCE: "paperclip-api",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
   it("rejects AGENT_JWT_COMPANY_ID/ISSUER/AUDIENCE being set without AGENT_JWT_SECRET", () => {
     expect(() =>
       loadAppEnv({
@@ -223,11 +289,48 @@ describe("loadAppEnv — agent broker is opt-in", () => {
     ).toThrow(GatewayConfigError);
   });
 
+  it("rejects AGENT_JWT_INSTANCE_ID being set alone without AGENT_JWT_SECRET", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_INSTANCE_ID: "some-instance",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("rejects AGENT_JWT_ENABLE_LEGACY_FALLBACK being set alone without AGENT_JWT_SECRET", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_ENABLE_LEGACY_FALLBACK: "true",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("rejects AGENT_JWT_CLOCK_TOLERANCE_SECONDS being set alone without AGENT_JWT_SECRET", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_CLOCK_TOLERANCE_SECONDS: "10",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
+  it("rejects AGENT_JWT_MAX_TOKEN_AGE_SECONDS being set alone without AGENT_JWT_SECRET", () => {
+    expect(() =>
+      loadAppEnv({
+        ...BASE_ENV,
+        AGENT_JWT_MAX_TOKEN_AGE_SECONDS: "3600",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(GatewayConfigError);
+  });
+
   it("accepts a fully and correctly configured broker", () => {
     const env = loadAppEnv({
       ...BASE_ENV,
       AGENT_JWT_SECRET: "a-secret-at-least-32-characters-long",
       AGENT_JWT_COMPANY_ID: "company-1,company-2",
+      AGENT_JWT_ISSUER: "paperclip",
       AGENT_JWT_AUDIENCE: "paperclip-api",
     } as unknown as NodeJS.ProcessEnv);
     expect(isAgentBrokerEnabled(env)).toBe(true);

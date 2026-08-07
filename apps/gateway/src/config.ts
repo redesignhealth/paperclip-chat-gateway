@@ -159,18 +159,59 @@ export interface AppEnv {
 /** Hosts that must never be reachable via SCHEDULER_BASE_URL outside explicit dev opt-in (cloud metadata + loopback). */
 const BLOCKED_SCHEDULER_HOSTS = new Set(["169.254.169.254", "metadata.google.internal", "localhost"]);
 
+function isIpv4LoopbackOrLinkLocal(hostname: string): boolean {
+  const ipv4Match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (!ipv4Match) return false;
+  const first = Number(ipv4Match[1]);
+  const second = Number(ipv4Match[2]);
+  if (first === 127) return true;
+  if (first === 169 && second === 254) return true;
+  return false;
+}
+
 function isLoopbackOrLinkLocal(hostname: string): boolean {
   if (BLOCKED_SCHEDULER_HOSTS.has(hostname.toLowerCase())) return true;
   // IPv4 loopback (127.0.0.0/8) and link-local (169.254.0.0/16), including
   // the cloud-metadata address, which falls inside link-local.
-  const ipv4Match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
-  if (ipv4Match) {
-    const first = Number(ipv4Match[1]);
-    const second = Number(ipv4Match[2]);
+  if (isIpv4LoopbackOrLinkLocal(hostname)) return true;
+
+  // `URL.hostname` serializes IPv6 hosts WITH brackets (e.g. "[::1]"), so
+  // strip them before doing any IPv6 comparison below.
+  const bracketMatch = /^\[(.+)\]$/.exec(hostname);
+  const host = (bracketMatch ? bracketMatch[1]! : hostname).toLowerCase();
+
+  if (host === "::1") return true;
+
+  // IPv4-mapped IPv6 loopback, e.g. "::ffff:127.0.0.1". Node's `URL` parser
+  // normalizes the embedded IPv4 octets into two hex hextets rather than
+  // keeping the dotted-decimal form (e.g. "::ffff:127.0.0.1" serializes as
+  // "[::ffff:7f00:1]"), so match both the dotted and the hex-hextet forms.
+  const ipv4MappedDottedMatch = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(host);
+  if (ipv4MappedDottedMatch && isIpv4LoopbackOrLinkLocal(ipv4MappedDottedMatch[1]!)) return true;
+  const ipv4MappedHexMatch = /^::ffff:([0-9a-f]{1,4}):[0-9a-f]{1,4}$/.exec(host);
+  if (ipv4MappedHexMatch) {
+    // The IPv4 address's first two octets live entirely in the first of
+    // the two trailing hextets (e.g. "7f00" -> 127.0.x.x); the second
+    // hextet only carries the third/fourth octets, irrelevant to the
+    // loopback/link-local checks below.
+    const highHextet = Number.parseInt(ipv4MappedHexMatch[1]!, 16);
+    const first = (highHextet >> 8) & 0xff;
+    const second = highHextet & 0xff;
     if (first === 127) return true;
     if (first === 169 && second === 254) return true;
   }
-  if (hostname === "::1") return true;
+
+  // Link-local unicast (fe80::/10): first 10 bits are 1111111010, i.e. the
+  // first hextet is in the range fe80-febf.
+  const firstHextetMatch = /^([0-9a-f]{1,4}):/.exec(host);
+  if (firstHextetMatch) {
+    const firstHextet = Number.parseInt(firstHextetMatch[1]!, 16);
+    if (firstHextet >= 0xfe80 && firstHextet <= 0xfebf) return true;
+    // Unique local addresses (fc00::/7): first 7 bits are 1111110, i.e. the
+    // first hextet's top byte is 0xfc or 0xfd.
+    if (firstHextet >= 0xfc00 && firstHextet <= 0xfdff) return true;
+  }
+
   return false;
 }
 
@@ -240,20 +281,23 @@ const appEnvSchema = z
           message: "AGENT_JWT_SECRET must be at least 32 characters",
         });
       }
-      if (!val.AGENT_JWT_COMPANY_ID || val.AGENT_JWT_COMPANY_ID.trim().length === 0) {
+      if (parseCompanyIdAllowlist(val.AGENT_JWT_COMPANY_ID).length === 0) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["AGENT_JWT_COMPANY_ID"],
-          message: "AGENT_JWT_COMPANY_ID is required when AGENT_JWT_SECRET (the agent broker) is set",
+          message:
+            "AGENT_JWT_COMPANY_ID is required when AGENT_JWT_SECRET (the agent broker) is set, and must parse " +
+            "to at least one non-empty, comma-separated company id (e.g. \",\" or \" \" is rejected)",
         });
       }
-      if (!val.AGENT_JWT_ISSUER && !val.AGENT_JWT_AUDIENCE) {
+      if (!val.AGENT_JWT_ISSUER || !val.AGENT_JWT_AUDIENCE) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["AGENT_JWT_ISSUER"],
           message:
-            "At least one of AGENT_JWT_ISSUER / AGENT_JWT_AUDIENCE is required when the agent broker is enabled " +
-            "— unset both only binds signature+company, with no issuer/audience binding on this trust boundary",
+            "Both AGENT_JWT_ISSUER and AGENT_JWT_AUDIENCE are required when the agent broker is enabled " +
+            "— this is a two-dimensional binding (issuer AND audience), and requiring only one of them " +
+            "would collapse that defense-in-depth to a single claim",
         });
       }
       if (val.AGENT_JWT_CLOCK_TOLERANCE_SECONDS !== undefined && !/^\d+$/.test(val.AGENT_JWT_CLOCK_TOLERANCE_SECONDS)) {
@@ -271,7 +315,15 @@ const appEnvSchema = z
         });
       }
     } else {
-      if (val.AGENT_JWT_COMPANY_ID || val.AGENT_JWT_ISSUER || val.AGENT_JWT_AUDIENCE) {
+      const otherAgentJwtVarsSet =
+        val.AGENT_JWT_COMPANY_ID !== undefined ||
+        val.AGENT_JWT_INSTANCE_ID !== undefined ||
+        val.AGENT_JWT_ISSUER !== undefined ||
+        val.AGENT_JWT_AUDIENCE !== undefined ||
+        val.AGENT_JWT_ENABLE_LEGACY_FALLBACK !== undefined ||
+        val.AGENT_JWT_CLOCK_TOLERANCE_SECONDS !== undefined ||
+        val.AGENT_JWT_MAX_TOKEN_AGE_SECONDS !== undefined;
+      if (otherAgentJwtVarsSet) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["AGENT_JWT_SECRET"],
