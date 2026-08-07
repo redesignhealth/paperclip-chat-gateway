@@ -106,6 +106,7 @@ function makeDeps(overrides: Partial<GatewayDeps> = {}): GatewayDeps {
     paperclipApiBaseUrl: "https://paperclip.example/api",
     cookieSecret: "test-cookie-secret-test-cookie-secret",
     resolveEmployeeId: async () => null,
+    isAdminEmail: () => false,
     agentTokenConfig,
     schedulerClient: new RecordingSchedulerClient(),
     ...overrides,

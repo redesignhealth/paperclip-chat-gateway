@@ -20,6 +20,16 @@ interface OidcTransactionCookie {
 interface SessionCookiePayload {
   employeeId: string;
   issuedAt: number;
+  /**
+   * Verified email at the time of login, lowercased. Carried in the
+   * (signed, httpOnly) session cookie purely so the admin-allowlist check
+   * (`GATEWAY_ADMIN_EMAILS`, see `requireAdmin` in routes/admin.ts) doesn't
+   * need a fresh identity-provider round trip on every admin request.
+   * Never used for authorization decisions other than the admin allowlist
+   * — chat routes and the agent broker route both key exclusively on
+   * `employeeId` via BindingTable, per that class's own invariants.
+   */
+  email?: string;
 }
 
 function isKnownAuthPolicyError(error: unknown): boolean {
@@ -133,7 +143,11 @@ export function registerAuthRoutes(app: FastifyInstance, deps: GatewayDeps): voi
     }
 
     reply.clearCookie(OIDC_TRANSACTION_COOKIE, { path: "/auth" });
-    const payload: SessionCookiePayload = { employeeId, issuedAt: Date.now() };
+    const payload: SessionCookiePayload = {
+      employeeId,
+      issuedAt: Date.now(),
+      email: claims.email?.toLowerCase(),
+    };
     reply.setCookie(SESSION_COOKIE, JSON.stringify(payload), {
       httpOnly: true,
       secure: true,
@@ -179,6 +193,49 @@ export function readSessionEmployeeId(req: {
   if (Date.now() - payload.issuedAt > SESSION_MAX_AGE_MS) return null;
 
   return payload.employeeId;
+}
+
+/**
+ * Reads the verified email captured in the session cookie at login time, or
+ * null if there is no valid session or the IdP asserted no email. Used only
+ * by the admin-allowlist check (routes/admin.ts) — see
+ * `SessionCookiePayload.email`'s doc comment for why this is safe to trust
+ * without a fresh IdP round trip.
+ */
+export function readSessionEmail(req: {
+  cookies: Record<string, string | undefined>;
+  unsignCookie: (v: string) => { valid: boolean; value: string | null };
+}): string | null {
+  const raw = req.cookies[SESSION_COOKIE];
+  if (!raw) return null;
+  const result = req.unsignCookie(raw);
+  if (!result.valid || !result.value) return null;
+
+  let payload: SessionCookiePayload;
+  try {
+    payload = JSON.parse(result.value) as SessionCookiePayload;
+  } catch {
+    return null;
+  }
+  if (typeof payload.employeeId !== "string" || typeof payload.issuedAt !== "number") return null;
+  if (Date.now() - payload.issuedAt > SESSION_MAX_AGE_MS) return null;
+
+  return typeof payload.email === "string" ? payload.email : null;
+}
+
+/**
+ * Route-scoped auth guard shared by every authenticated route
+ * (chat, admin). See routes/chat.ts's original doc comment for why this is
+ * attached per-route via `preHandler` rather than a blanket
+ * `app.addHook("preHandler", ...)`.
+ */
+export async function requireAuth(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  const employeeId = readSessionEmployeeId(req);
+  if (!employeeId) {
+    reply.code(401).send({ error: "Not authenticated." });
+    return;
+  }
+  (req as { employeeId?: string }).employeeId = employeeId;
 }
 
 export const AUTH_COOKIE_NAMES = { OIDC_TRANSACTION_COOKIE, SESSION_COOKIE, CSRF_COOKIE };

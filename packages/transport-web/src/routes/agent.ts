@@ -70,7 +70,7 @@ async function authenticateAgentCall(
     throw error;
   }
 
-  const employeeId = deps.bindings.resolveEmployeeFor(verified.agentId);
+  const employeeId = await deps.bindings.resolveEmployeeFor(verified.agentId);
   if (!employeeId) {
     req.log.warn({ agentId: verified.agentId }, "no employee bound to this agentId; denying by default");
     reply.code(403).send({ error: "This agent is not bound to any employee." });

@@ -278,6 +278,32 @@ docker run \
   with a `GatewayConfigError` that names `GATEWAY_CONFIG_PATH` and the
   exact path it looked at, instead of an opaque crash.
 
+### Postgres-backed store (`DATABASE_URL`)
+
+Setting `DATABASE_URL` switches the roster/binding/credential store from
+the file/env path above to a Postgres-backed store
+(`@paperclip-chat-gateway/store-postgres`) — `GATEWAY_CONFIG_PATH` and
+`CREDENTIAL_STORE_KIND` are then ignored, and employees/agent
+bindings/agent credentials are managed live via the `/api/admin/*`
+endpoints instead of a static file baked at deploy time. See
+`packages/store-postgres/README.md` for the schema and why the MVP's
+"one owner per agent" / "one personal agent per person" rules are
+application-level checks rather than schema constraints.
+
+- `AGENT_KEY_ENCRYPTION_KEY` is **required** whenever `DATABASE_URL` is
+  set: 64 hex characters (32 bytes), used to encrypt/decrypt agent API
+  keys at the application layer (AES-256-GCM) before they reach Postgres.
+  There is no default; generate one with e.g. `openssl rand -hex 32` and
+  treat it like any other production secret — losing it makes every
+  stored credential unrecoverable.
+- `GATEWAY_ADMIN_EMAILS` is a comma-separated, case-insensitive allowlist
+  of verified emails permitted to call `/api/admin/*`. **Fails closed**
+  when unset or empty: nobody is admin, never everybody. Only relevant
+  when `DATABASE_URL` is set (the admin API isn't registered at all
+  otherwise).
+- Migrations (`packages/store-postgres/src/migrations/*.sql`) run
+  automatically and idempotently at gateway startup.
+
 ### Reverse proxies and `TRUST_PROXY`
 
 By default the gateway does **not** trust `X-Forwarded-*` headers

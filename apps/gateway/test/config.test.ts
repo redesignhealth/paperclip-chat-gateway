@@ -4,9 +4,12 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   GatewayConfigError,
+  isAdminEmailAllowed,
   isAgentBrokerEnabled,
+  isDbStoreEnabled,
   loadAppEnv,
   loadGatewayConfigFile,
+  parseAdminEmailAllowlist,
   parseBooleanEnv,
   parseCompanyIdAllowlist,
   parseRequireVerifiedEmailEnv,
@@ -411,6 +414,61 @@ describe("loadAppEnv — agent broker is opt-in", () => {
           } as unknown as NodeJS.ProcessEnv),
         ).toThrow(GatewayConfigError);
       }
+    });
+  });
+
+  describe("DATABASE_URL / AGENT_KEY_ENCRYPTION_KEY — DB-backed store is opt-in, but fails closed once opted in", () => {
+    it("starts successfully with DATABASE_URL unset (file/env store)", () => {
+      const env = loadAppEnv(BASE_ENV as unknown as NodeJS.ProcessEnv);
+      expect(isDbStoreEnabled(env)).toBe(false);
+    });
+
+    it("requires AGENT_KEY_ENCRYPTION_KEY when DATABASE_URL is set", () => {
+      expect(() =>
+        loadAppEnv({
+          ...BASE_ENV,
+          DATABASE_URL: "postgres://user:pass@localhost:5432/db",
+        } as unknown as NodeJS.ProcessEnv),
+      ).toThrow(GatewayConfigError);
+    });
+
+    it("rejects an AGENT_KEY_ENCRYPTION_KEY that isn't exactly 64 hex characters", () => {
+      expect(() =>
+        loadAppEnv({
+          ...BASE_ENV,
+          DATABASE_URL: "postgres://user:pass@localhost:5432/db",
+          AGENT_KEY_ENCRYPTION_KEY: "not-hex-and-way-too-short",
+        } as unknown as NodeJS.ProcessEnv),
+      ).toThrow(GatewayConfigError);
+    });
+
+    it("accepts a valid 64-hex-character AGENT_KEY_ENCRYPTION_KEY alongside DATABASE_URL", () => {
+      const env = loadAppEnv({
+        ...BASE_ENV,
+        DATABASE_URL: "postgres://user:pass@localhost:5432/db",
+        AGENT_KEY_ENCRYPTION_KEY: "a".repeat(64),
+      } as unknown as NodeJS.ProcessEnv);
+      expect(isDbStoreEnabled(env)).toBe(true);
+    });
+  });
+
+  describe("GATEWAY_ADMIN_EMAILS — fails closed when unset/empty", () => {
+    it("parses an unset allowlist to an empty set (nobody is admin)", () => {
+      expect(parseAdminEmailAllowlist(undefined).size).toBe(0);
+      expect(isAdminEmailAllowed(parseAdminEmailAllowlist(undefined), "anyone@example.com")).toBe(false);
+    });
+
+    it("parses an empty/whitespace-only allowlist to an empty set", () => {
+      expect(parseAdminEmailAllowlist("").size).toBe(0);
+      expect(parseAdminEmailAllowlist(" , ,").size).toBe(0);
+    });
+
+    it("parses a comma-separated allowlist and matches case-insensitively", () => {
+      const allowlist = parseAdminEmailAllowlist("Alice@Example.com, bob@example.com");
+      expect(isAdminEmailAllowed(allowlist, "alice@example.com")).toBe(true);
+      expect(isAdminEmailAllowed(allowlist, "ALICE@EXAMPLE.COM")).toBe(true);
+      expect(isAdminEmailAllowed(allowlist, "bob@example.com")).toBe(true);
+      expect(isAdminEmailAllowed(allowlist, "mallory@example.com")).toBe(false);
     });
   });
 });

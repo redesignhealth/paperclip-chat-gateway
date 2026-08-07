@@ -9,26 +9,74 @@ import {
   StubSchedulerClient,
   type AgentCredentialStore,
   type AgentTokenConfig,
+  type IdentityResolver,
   type SchedulerClient,
 } from "@paperclip-chat-gateway/core";
-import { loadOidcConfigFromEnv, OidcAdapter, RealOidcPort } from "@paperclip-chat-gateway/auth-oidc";
-import { buildServer, type GatewayDeps } from "@paperclip-chat-gateway/transport-web";
 import {
+  AdminStore,
+  createPool,
+  DbAgentCredentialStore,
+  DbBindingTable,
+  DbIdentityResolver,
+  migrate,
+  parseEncryptionKey,
+} from "@paperclip-chat-gateway/store-postgres";
+import { loadOidcConfigFromEnv, OidcAdapter, RealOidcPort } from "@paperclip-chat-gateway/auth-oidc";
+import { buildServer, type AdminBackend, type BindingResolver, type GatewayDeps } from "@paperclip-chat-gateway/transport-web";
+import {
+  isAdminEmailAllowed,
   isAgentBrokerEnabled,
+  isDbStoreEnabled,
   loadAppEnv,
   loadGatewayConfigFile,
+  parseAdminEmailAllowlist,
   parseBooleanEnv,
   parseCompanyIdAllowlist,
   parseRequireVerifiedEmailEnv,
   parseTrustProxy,
   toConfigEmployees,
+  type AppEnv,
 } from "./config.js";
 import { assertUiDistExists, resolveUiDistPath } from "./ui-dist.js";
 
-async function main() {
-  const env = loadAppEnv();
-  const gatewayConfig = await loadGatewayConfigFile(env.GATEWAY_CONFIG_PATH);
+interface RosterAndCredentials {
+  bindings: BindingResolver;
+  identityResolver: IdentityResolver;
+  credentials: AgentCredentialStore;
+  admin?: AdminBackend;
+  /** "db" or "file"/"env" — logged verbatim at startup alongside trustProxy/requireVerifiedEmail. */
+  storeBackend: string;
+  /** Number of active bindings, when cheaply knowable at boot (file/env only) — omitted for the DB-backed store. */
+  boundAgentCount?: number;
+}
 
+/**
+ * Builds the roster (employees + bindings) and credential store for this
+ * deployment. Selection is config-driven, mirroring the existing
+ * CREDENTIAL_STORE_KIND pattern: DATABASE_URL present -> Postgres-backed
+ * store (this is also the only path `admin` is populated for, since the
+ * file/env store has nothing to administer via API); otherwise the
+ * existing file/env store, unchanged.
+ */
+async function buildRosterAndCredentials(env: AppEnv): Promise<RosterAndCredentials> {
+  if (isDbStoreEnabled(env)) {
+    const pool = createPool(env.DATABASE_URL!);
+    // Idempotent — see store-postgres/src/migrate.ts. Running this at every
+    // boot means a fresh deployment or a new migration file "just works" on
+    // the next restart, with no separate migration step to forget.
+    await migrate(pool);
+
+    const encryptionKey = parseEncryptionKey(env.AGENT_KEY_ENCRYPTION_KEY);
+    return {
+      bindings: new DbBindingTable(pool),
+      identityResolver: new DbIdentityResolver(pool),
+      credentials: new DbAgentCredentialStore(pool, encryptionKey),
+      admin: new AdminStore(pool, encryptionKey),
+      storeBackend: "db (Postgres)",
+    };
+  }
+
+  const gatewayConfig = await loadGatewayConfigFile(env.GATEWAY_CONFIG_PATH);
   const bindings = BindingTable.fromConfig({ bindings: gatewayConfig.bindings });
   const identityResolver = new ConfigIdentityResolver(toConfigEmployees(gatewayConfig));
 
@@ -43,7 +91,9 @@ async function main() {
 
   // Fail closed at boot, not at request time: a bound agentId with no
   // configured credential would otherwise surface as a confusing 503 on
-  // whichever employee happens to message it first.
+  // whichever employee happens to message it first. Only meaningful for
+  // this file/env path — the DB-backed path's agents/credentials are
+  // administered live via the admin API, not fixed at deploy time.
   const distinctAgentIds = [...new Set(gatewayConfig.bindings.map((b) => b.agentId))];
   const missingCredentialAgentIds: string[] = [];
   for (const agentId of distinctAgentIds) {
@@ -57,6 +107,21 @@ async function main() {
         "before starting.",
     );
   }
+
+  return {
+    bindings,
+    identityResolver,
+    credentials,
+    storeBackend: `file/env (${env.CREDENTIAL_STORE_KIND})`,
+    boundAgentCount: bindings.size(),
+  };
+}
+
+async function main() {
+  const env = loadAppEnv();
+  const { bindings, identityResolver, credentials, admin, storeBackend, boundAgentCount } =
+    await buildRosterAndCredentials(env);
+  const adminAllowlist = parseAdminEmailAllowlist(env.GATEWAY_ADMIN_EMAILS);
 
   // loadOidcConfigFromEnv re-validates a subset of the same env vars
   // appEnvSchema already validated; passing the already-loaded `env` object
@@ -121,6 +186,8 @@ async function main() {
       const employee = await identityResolver.resolve({ subject: claims.subject, email: claims.email });
       return employee?.employeeId ?? null;
     },
+    isAdminEmail: (email) => isAdminEmailAllowed(adminAllowlist, email),
+    admin,
     agentTokenConfig,
     schedulerClient,
   };
@@ -139,9 +206,25 @@ async function main() {
   // trusted — is diagnosable from the logs without having to go re-check
   // env vars by hand. See README's "Reverse proxies and TRUST_PROXY".
   app.log.info(
-    { port, agents: bindings.size(), trustProxy: trustProxy ?? false, requireVerifiedEmail },
+    { port, agents: boundAgentCount, trustProxy: trustProxy ?? false, requireVerifiedEmail },
     "paperclip-chat-gateway listening",
   );
+  // Explicit, unmissable startup line for which roster/binding/credential
+  // store backend this deployment is using — see buildRosterAndCredentials.
+  // DATABASE_URL being set is the only signal for this, and it's easy to
+  // miss scanning raw env vars, so call it out the same way trustProxy and
+  // requireVerifiedEmail are called out above.
+  app.log.info(
+    { storeBackend, adminApiEnabled: admin !== undefined, adminAllowlistSize: adminAllowlist.size },
+    `roster/binding/credential store backend: ${storeBackend}`,
+  );
+  if (admin !== undefined && adminAllowlist.size === 0) {
+    app.log.warn(
+      "GATEWAY_ADMIN_EMAILS is unset/empty while the DB-backed store (and its admin API) is active — " +
+        "the admin API fails closed, so nobody (not even a valid, authenticated session) can call it " +
+        "until this is set.",
+    );
+  }
   // requireVerifiedEmail is a security-relevant setting (see
   // RealOidcPortOptions.requireVerifiedEmail and README's "Reverse proxies
   // and TRUST_PROXY" section) that defaults to strict/true — call out the

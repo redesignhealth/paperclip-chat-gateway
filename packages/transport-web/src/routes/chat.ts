@@ -2,30 +2,11 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { NotImplementedError, PaperclipApiError, sessionKeyFor } from "@paperclip-chat-gateway/core";
 import type { GatewayDeps } from "../types.js";
-import { readSessionEmployeeId, requireCsrf } from "./auth.js";
+import { requireAuth, requireCsrf } from "./auth.js";
 
 const sendMessageSchema = z.object({
   body: z.string().min(1).max(8000),
 });
-
-/**
- * Route-scoped auth guard, attached per-route via each route's `preHandler`
- * option rather than a blanket `app.addHook("preHandler", ...)` that
- * pattern-matches on `req.url.startsWith("/api/chat")`. A string-prefix
- * check is fragile: any future route registered outside that exact prefix
- * (a typo, a moved path, a route mounted by another plugin) would silently
- * bypass authentication instead of failing to compile/register. Attaching
- * the guard directly to each route makes "is this route authenticated?"
- * visible at the call site and impossible to accidentally skip.
- */
-async function requireAuth(req: FastifyRequest, reply: FastifyReply): Promise<void> {
-  const employeeId = readSessionEmployeeId(req);
-  if (!employeeId) {
-    reply.code(401).send({ error: "Not authenticated." });
-    return;
-  }
-  (req as { employeeId?: string }).employeeId = employeeId;
-}
 
 /** Logs and maps a PaperclipApiError without leaking upstream response bodies into logs or the client response. */
 function handlePaperclipApiError(req: FastifyRequest, reply: FastifyReply, error: PaperclipApiError): void {
@@ -45,7 +26,7 @@ function handlePaperclipApiError(req: FastifyRequest, reply: FastifyReply, error
 export function registerChatRoutes(app: FastifyInstance, deps: GatewayDeps): void {
   app.get("/api/chat/session", { preHandler: requireAuth }, async (req, reply) => {
     const employeeId = (req as { employeeId?: string }).employeeId!;
-    const agentId = deps.bindings.resolveAgentFor(employeeId);
+    const agentId = await deps.bindings.resolveAgentFor(employeeId);
     if (!agentId) {
       reply.code(403).send({ error: "No agent is bound to this identity." });
       return;
@@ -61,7 +42,7 @@ export function registerChatRoutes(app: FastifyInstance, deps: GatewayDeps): voi
 
   app.get("/api/chat/messages", { preHandler: requireAuth }, async (req, reply) => {
     const employeeId = (req as { employeeId?: string }).employeeId!;
-    const agentId = deps.bindings.resolveAgentFor(employeeId);
+    const agentId = await deps.bindings.resolveAgentFor(employeeId);
     if (!agentId) {
       reply.code(403).send({ error: "No agent is bound to this identity." });
       return;
@@ -104,7 +85,7 @@ export function registerChatRoutes(app: FastifyInstance, deps: GatewayDeps): voi
     // — see the module docstring — no field in `parsed.data` can influence
     // which agent this message goes to or whose identity Paperclip
     // attributes it to.
-    const agentId = deps.bindings.resolveAgentFor(employeeId);
+    const agentId = await deps.bindings.resolveAgentFor(employeeId);
     if (!agentId) {
       reply.code(403).send({ error: "No agent is bound to this identity." });
       return;

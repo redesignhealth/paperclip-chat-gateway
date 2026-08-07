@@ -170,6 +170,31 @@ export interface AppEnv {
    * and TRUST_PROXY" section (documented alongside it).
    */
   OIDC_REQUIRE_VERIFIED_EMAIL?: string;
+  /**
+   * Postgres connection string for the roster/binding/credential store.
+   * When set, this deployment uses the DB-backed store
+   * (`@paperclip-chat-gateway/store-postgres`) instead of the file/env
+   * store — GATEWAY_CONFIG_PATH and CREDENTIAL_STORE_KIND are then
+   * ignored. Leave unset for local dev / the existing file/env path.
+   */
+  DATABASE_URL?: string;
+  /**
+   * Required whenever DATABASE_URL is set. The raw AES-256-GCM key (32
+   * bytes, hex-encoded — exactly 64 hex characters), used to encrypt/decrypt
+   * agent API keys at the application layer before they reach Postgres. See
+   * `@paperclip-chat-gateway/store-postgres`'s crypto.ts. There is no
+   * default; losing this key makes every stored credential unrecoverable,
+   * and it must never be logged or checked into source control.
+   */
+  AGENT_KEY_ENCRYPTION_KEY?: string;
+  /**
+   * Comma-separated allowlist of verified emails permitted to call the
+   * `/api/admin/*` endpoints, matched case-insensitively. FAILS CLOSED when
+   * unset or empty: nobody is admin, never "everybody is admin." Only
+   * meaningful when DATABASE_URL is set (the admin API is only registered
+   * against the DB-backed store — see registerAdminRoutes).
+   */
+  GATEWAY_ADMIN_EMAILS?: string;
 }
 
 /** Hosts that must never be reachable via SCHEDULER_BASE_URL outside explicit dev opt-in (cloud metadata + loopback). */
@@ -287,8 +312,22 @@ const appEnvSchema = z
     AGENT_JWT_MAX_TOKEN_AGE_SECONDS: z.string().optional(),
     SCHEDULER_BASE_URL: z.string().optional(),
     SCHEDULER_ALLOW_INSECURE_URL: z.string().optional(),
+    DATABASE_URL: z.string().optional(),
+    AGENT_KEY_ENCRYPTION_KEY: z.string().optional(),
+    GATEWAY_ADMIN_EMAILS: z.string().optional(),
   })
   .superRefine((val, ctx) => {
+    if (val.DATABASE_URL !== undefined) {
+      if (!val.AGENT_KEY_ENCRYPTION_KEY || !/^[0-9a-fA-F]{64}$/.test(val.AGENT_KEY_ENCRYPTION_KEY)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["AGENT_KEY_ENCRYPTION_KEY"],
+          message:
+            "AGENT_KEY_ENCRYPTION_KEY is required and must be exactly 64 hex characters (32 bytes, for " +
+            "AES-256-GCM) when DATABASE_URL (the Postgres-backed store) is set.",
+        });
+      }
+    }
     const brokerEnabled = val.AGENT_JWT_SECRET !== undefined;
     if (brokerEnabled) {
       if (val.AGENT_JWT_SECRET!.length < 32) {
@@ -416,6 +455,32 @@ export function parseTrustProxy(value: string | undefined): boolean | string | s
 export function parseRequireVerifiedEmailEnv(value: string | undefined): boolean {
   if (value === "false") return false;
   return true;
+}
+
+/**
+ * Parses GATEWAY_ADMIN_EMAILS's comma-separated allowlist into a lowercased
+ * Set. Unset or empty input yields an empty Set — the caller
+ * (`isAdminEmailAllowed`) must treat an empty Set as "nobody is admin,"
+ * never "everybody is admin," which is what makes this fail closed.
+ */
+export function parseAdminEmailAllowlist(value: string | undefined): ReadonlySet<string> {
+  if (!value) return new Set();
+  return new Set(
+    value
+      .split(",")
+      .map((v) => v.trim().toLowerCase())
+      .filter((v) => v.length > 0),
+  );
+}
+
+/** Case-insensitive membership check against the parsed GATEWAY_ADMIN_EMAILS allowlist. */
+export function isAdminEmailAllowed(allowlist: ReadonlySet<string>, email: string): boolean {
+  return allowlist.has(email.toLowerCase());
+}
+
+/** True when this deployment is configured to use the Postgres-backed store (see DATABASE_URL). */
+export function isDbStoreEnabled(env: Pick<AppEnv, "DATABASE_URL">): boolean {
+  return env.DATABASE_URL !== undefined && env.DATABASE_URL.length > 0;
 }
 
 export function loadAppEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {

@@ -92,6 +92,7 @@ function makeDeps(overrides: Partial<GatewayDeps> = {}, client: FakePaperclipCli
     paperclipApiBaseUrl: "https://paperclip.example/api",
     cookieSecret: "test-cookie-secret-test-cookie-secret",
     resolveEmployeeId: async (claims) => (claims.email === "alice@redesignhealth.com" ? "emp-alice" : null),
+    isAdminEmail: () => false,
     ...overrides,
   };
 }
