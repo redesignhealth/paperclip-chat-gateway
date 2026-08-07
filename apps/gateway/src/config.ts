@@ -154,6 +154,22 @@ export interface AppEnv {
    * list of them, or a hop count (an integer).
    */
   TRUST_PROXY?: string;
+  /**
+   * Controls `RealOidcPortOptions.requireVerifiedEmail`. Leave unset
+   * (defaults to strict/`true`) unless your IdP is known to assert
+   * `email_verified: false` for legitimate accounts it fully controls (e.g.
+   * Okta org authorization servers reflect Okta's own email-verification
+   * workflow, not whether the address is real — directory-synced or
+   * admin-created users commonly get `email_verified = false` forever even
+   * though the address is their actual work identity). Setting this to
+   * `false` means the gateway trusts whatever email the IdP asserts with no
+   * further check — only acceptable when you fully control the IdP and it
+   * is your sole identity source. Accepts only the literal strings "true"
+   * or "false"; any other value fails validation at startup rather than
+   * silently falling back to either value. See README's "Reverse proxies
+   * and TRUST_PROXY" section (documented alongside it).
+   */
+  OIDC_REQUIRE_VERIFIED_EMAIL?: string;
 }
 
 /** Hosts that must never be reachable via SCHEDULER_BASE_URL outside explicit dev opt-in (cloud metadata + loopback). */
@@ -255,6 +271,7 @@ const appEnvSchema = z
     CREDENTIAL_STORE_FILE_PATH: z.string().optional(),
     UI_DIST_PATH: z.string().optional(),
     TRUST_PROXY: z.string().optional(),
+    OIDC_REQUIRE_VERIFIED_EMAIL: z.string().optional(),
     // The agent-facing identity broker is opt-in: no default, and unset
     // means the broker route is disabled rather than a boot-time failure.
     // When set, every AGENT_JWT_*/SCHEDULER_BASE_URL setting is validated
@@ -338,6 +355,21 @@ const appEnvSchema = z
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["SCHEDULER_BASE_URL"], message: error });
       }
     }
+    if (
+      val.OIDC_REQUIRE_VERIFIED_EMAIL !== undefined &&
+      val.OIDC_REQUIRE_VERIFIED_EMAIL !== "true" &&
+      val.OIDC_REQUIRE_VERIFIED_EMAIL !== "false"
+    ) {
+      // Fail closed at boot rather than guessing: this flag defaults to the
+      // strict/safe behavior, so silently coercing an unrecognized value
+      // (typo, "1", "yes", stray whitespace, ...) to `false` would be the
+      // one outcome that must never happen by accident.
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["OIDC_REQUIRE_VERIFIED_EMAIL"],
+        message: 'OIDC_REQUIRE_VERIFIED_EMAIL must be exactly "true" or "false" (or unset, which defaults to "true")',
+      });
+    }
   });
 
 /** Parses a "1"/"true"/"yes"/"on" (case-insensitive) style boolean env var. Anything else, including unset, is false. */
@@ -372,6 +404,18 @@ export function parseTrustProxy(value: string | undefined): boolean | string | s
     .map((v) => v.trim())
     .filter((v) => v.length > 0);
   return items.length === 1 ? items[0] : items;
+}
+
+/**
+ * Parses AppEnv.OIDC_REQUIRE_VERIFIED_EMAIL into RealOidcPortOptions.requireVerifiedEmail.
+ * Only meant to be called on a value that has already passed appEnvSchema's
+ * validation (unset, "true", or "false") — anything else is a bug upstream,
+ * not a value this function should ever need to guess about, so it falls
+ * back to the strict/safe default rather than throwing again.
+ */
+export function parseRequireVerifiedEmailEnv(value: string | undefined): boolean {
+  if (value === "false") return false;
+  return true;
 }
 
 export function loadAppEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {
