@@ -1,0 +1,100 @@
+{
+  "_comment": "Generic, fully-placeholder ECS Fargate task definition for paperclip-chat-gateway. Every <ALL_CAPS> value must be filled in for your own environment before this is usable -- there are no real account IDs, ARNs, or hostnames here. See docs/deployment/ecs-fargate.md for the reasoning behind each choice.",
+  "family": "<SERVICE_NAME>",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "<EXECUTION_ROLE_ARN>",
+  "taskRoleArn": "<TASK_ROLE_ARN>",
+  "volumes": [
+    {
+      "name": "gateway-config",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "<CONFIG_EFS_FILE_SYSTEM_ID>",
+        "transitEncryption": "ENABLED",
+        "authorizationConfig": {
+          "accessPointId": "<CONFIG_EFS_ACCESS_POINT_ID>",
+          "iam": "ENABLED"
+        }
+      }
+    }
+  ],
+  "containerDefinitions": [
+    {
+      "name": "network-sidecar",
+      "_comment": "Placeholder for whatever private-overlay-network sidecar your Paperclip API base URL requires reaching it (Tailscale, a VPN mesh, etc.) -- substitute your own image/config here, or delete this container entirely if PAPERCLIP_API_BASE_URL is reachable without one.",
+      "image": "<NETWORK_SIDECAR_IMAGE>",
+      "essential": true,
+      "environment": [{ "name": "EXAMPLE_SIDECAR_CONFIG", "value": "<SIDECAR_CONFIG_VALUE>" }],
+      "secrets": [{ "name": "SIDECAR_AUTH_KEY", "valueFrom": "<SIDECAR_AUTH_KEY_SSM_ARN>" }],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "<SIDECAR_HEALTH_CHECK_COMMAND>"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "<LOG_GROUP_NAME>",
+          "awslogs-region": "<AWS_REGION>",
+          "awslogs-stream-prefix": "network-sidecar"
+        }
+      }
+    },
+    {
+      "name": "gateway",
+      "image": "<ECR_IMAGE_URI>:<IMAGE_TAG>",
+      "essential": true,
+      "portMappings": [{ "containerPort": 3000, "protocol": "tcp" }],
+      "mountPoints": [
+        {
+          "sourceVolume": "gateway-config",
+          "containerPath": "/app/config",
+          "readOnly": true
+        }
+      ],
+      "environment": [
+        { "name": "PORT", "value": "3000" },
+        { "name": "GATEWAY_CONFIG_PATH", "value": "/app/config/gateway.json" },
+        { "name": "PAPERCLIP_API_BASE_URL", "value": "<PAPERCLIP_API_BASE_URL>" },
+        { "name": "OIDC_ISSUER_URL", "value": "<OIDC_ISSUER_URL>" },
+        { "name": "OIDC_REDIRECT_URI", "value": "<OIDC_REDIRECT_URI>" },
+        { "name": "OIDC_ALLOWED_EMAIL_DOMAINS", "value": "<OIDC_ALLOWED_EMAIL_DOMAINS>" },
+        { "name": "CREDENTIAL_STORE_KIND", "value": "env" }
+      ],
+      "secrets": [
+        { "name": "COOKIE_SECRET", "valueFrom": "<COOKIE_SECRET_SSM_ARN>" },
+        { "name": "OIDC_CLIENT_ID", "valueFrom": "<OIDC_CLIENT_ID_SSM_ARN>" },
+        { "name": "OIDC_CLIENT_SECRET", "valueFrom": "<OIDC_CLIENT_SECRET_SSM_ARN>" },
+        {
+          "name": "PAPERCLIP_AGENT_KEY__<ENCODED_AGENT_ID>",
+          "valueFrom": "<PER_AGENT_KEY_SSM_ARN>",
+          "_comment": "One entry per agentId referenced in the bindings table -- see EnvAgentCredentialStore.envVarNameFor() in packages/core for the exact name-encoding rule."
+        }
+      ],
+      "healthCheck": {
+        "_comment": "The runtime image (node:22.12.0-bookworm-slim) has neither curl nor wget -- verified against the pinned tag. Reuse Node's own built-in fetch, matching the image's own Dockerfile HEALTHCHECK exactly.",
+        "command": [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "<LOG_GROUP_NAME>",
+          "awslogs-region": "<AWS_REGION>",
+          "awslogs-stream-prefix": "gateway"
+        }
+      },
+      "dependsOn": [{ "containerName": "network-sidecar", "condition": "START" }]
+    }
+  ]
+}

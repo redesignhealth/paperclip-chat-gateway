@@ -178,6 +178,17 @@ proxy-trust mismatch (e.g. OIDC redirect URIs coming back with the wrong
 scheme/host) is diagnosable from the logs alone, without having to check
 the env var configuration by hand.
 
+## Deploying to ECS Fargate
+
+For orchestrators beyond plain `docker run` — ECS Fargate specifically — see
+[`docs/deployment/ecs-fargate.md`](docs/deployment/ecs-fargate.md). It covers
+the container health-check tooling trap (the runtime image has neither
+`curl` nor `wget`), the tradeoffs between the two ways to deliver
+`GATEWAY_CONFIG_PATH` at runtime (EFS mount vs. render-from-secret-store at
+container start), why `CREDENTIAL_STORE_KIND=env` is the natural fit for
+ECS's own `secrets` mechanism, and a fully-genericized sample task
+definition ([`docs/deployment/sample-task-definition.json`](docs/deployment/sample-task-definition.json)).
+
 ## Repo layout
 
 - `packages/core` — security kernel: identity resolution, the binding
