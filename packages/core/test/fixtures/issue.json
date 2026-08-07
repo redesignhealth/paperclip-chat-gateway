@@ -1,0 +1,7 @@
+{
+  "id": "issue-123",
+  "companyId": "company-abc",
+  "title": "Chat with agent-alice-cfo",
+  "status": "in_progress",
+  "assigneeAgentId": "agent-alice-cfo"
+}
