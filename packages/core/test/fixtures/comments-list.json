@@ -1,0 +1,14 @@
+[
+  {
+    "id": "comment-1",
+    "body": "hi there",
+    "authorType": "user",
+    "createdAt": "2026-08-06T11:00:00.000Z"
+  },
+  {
+    "id": "comment-2",
+    "body": "how can I help?",
+    "authorType": "agent",
+    "createdAt": "2026-08-06T11:00:05.000Z"
+  }
+]

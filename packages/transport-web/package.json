@@ -1,0 +1,36 @@
+{
+  "name": "@paperclip-chat-gateway/transport-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/server.js",
+  "types": "./dist/server.d.ts",
+  "exports": {
+    ".": "./dist/server.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && pnpm run build:ui",
+    "build:ui": "vite build ui",
+    "dev:ui": "vite ui",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p ui/tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@paperclip-chat-gateway/auth-oidc": "workspace:*",
+    "@paperclip-chat-gateway/core": "workspace:*",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/static": "^8.0.4",
+    "fastify": "^5.2.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.7",
+    "@types/react-dom": "^19.0.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
+  }
+}

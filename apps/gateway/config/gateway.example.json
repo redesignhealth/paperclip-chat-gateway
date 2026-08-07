@@ -1,0 +1,15 @@
+{
+  "employees": [
+    {
+      "employeeId": "emp-alice",
+      "email": "alice@example.com",
+      "name": "Alice Example"
+    }
+  ],
+  "bindings": [
+    {
+      "employeeId": "emp-alice",
+      "agentId": "agent-alice-cfo"
+    }
+  ]
+}
