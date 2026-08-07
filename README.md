@@ -50,6 +50,97 @@ Run your agents in protected mode so the gateway is their only wake principal, a
 package that must stay honest about the security model regardless of which
 auth adapter or transport ships next.
 
+## Agent-facing identity broker (`POST /api/agent/scheduler`)
+
+Everything above is "human calls in, gateway calls Paperclip." This is the
+mirror image: **an external scheduler service needs to know WHICH HUMAN a
+calling Paperclip agent acts for, without trusting any spoofable claim.**
+The gateway is the only thing positioned to answer that safely, because it's
+the only party that holds both a verified `BindingTable` and (per this
+feature) the shared secret needed to verify a Paperclip agent's run token.
+
+### What a Paperclip agent run token is
+
+Every Paperclip agent process receives `PAPERCLIP_API_KEY` in its env: a
+run-bound JWT with claims `sub` (agentId), `company_id`, `run_id`, and —
+critically — `responsible_user_id`, signed HS256. Source-verified against
+Paperclip's `server/src/agent-auth-jwt.ts`:
+
+- The signing key is **not** the raw `BETTER_AUTH_SECRET`. Paperclip derives
+  a per-company, per-control-plane-instance key:
+  `HMAC-SHA256(masterSecret, "jwt:${instanceId}:${companyId}")`, itself
+  hex-encoded and then used as the HMAC key for the token (yes, the hex
+  string's UTF-8 bytes, not the raw digest — `packages/core/src/agent-token.ts`
+  mirrors this exactly, including that detail, because getting it wrong
+  produces a verifier that silently rejects every real token). Paperclip
+  also accepts a fallback verification against the raw master secret, for
+  tokens minted before per-company derivation existed; this gateway mirrors
+  that fallback too, and exposes the same "disable it once you're sure
+  nothing legacy is outstanding" knob (`AGENT_JWT_DISABLE_LEGACY_FALLBACK`).
+- There is no JWKS/asymmetric option and no introspection endpoint. HS256
+  shared-secret verification is the only cryptographic option available —
+  this gateway and Paperclip must run in the **same trust domain** and share
+  `AGENT_JWT_SECRET` out of band via a real secret store.
+
+### Trust model — read this before wiring anything to the broker route
+
+**What possession of a valid run token proves:** that the bearer is (or very
+recently was) a live run of agent `sub`, i.e. `run_id`. Nothing more.
+
+**What it does NOT prove — and specifically, what this gateway refuses to
+even look at:** `responsible_user_id`. That field is client-settable by any
+Paperclip member at issue creation time, so it is not a property the
+token's *signer* attests to in any cryptographic sense — it is
+attacker-controllable data riding inside an otherwise-legitimate token.
+`packages/core/src/agent-token.ts`'s `verifyAgentRunToken` never reads this
+claim out of the verified payload, and `VerifiedAgentToken` has no field
+for it — there is no code path anywhere downstream of verification that
+could accidentally rely on it. `packages/core/test/agent-token.test.ts`
+asserts this directly: two otherwise-identical tokens differing only in
+`responsible_user_id` resolve to byte-identical results.
+
+**Who this gateway believes a call is "for," concretely:** the *human*
+returned by `BindingTable.resolveEmployeeFor(agentId)` — the same
+deny-by-default binding table the human-facing routes use, just walked in
+the other direction. An `agentId` with no configured binding is rejected
+with 403, never guessed. Ambiguity (two employees somehow bound to one
+agent) can't reach this code path at all: `BindingTable.fromConfig` already
+rejects that shape at load time (`DuplicateAgentBindingError`), before any
+request is ever served.
+
+**Why the verifier must live in the same trust domain as Paperclip, and why
+the downstream scheduler must NOT hold this secret:** `AGENT_JWT_SECRET` is
+symmetric — anything that has it can *mint* valid tokens, not just verify
+them. This gateway needs it to verify inbound tokens. The downstream
+scheduler never needs to see a token at all: it receives an already-resolved
+`employeeId` from this gateway, over whatever transport/auth you configure
+between gateway and scheduler (see `SchedulerClient` in
+`packages/core/src/scheduler-client.ts`). Handing the scheduler the shared
+secret would let a scheduler compromise (or a bug in a *third* service) mint
+tokens that impersonate arbitrary agents against Paperclip itself — a much
+larger blast radius than what this gateway needs to expose.
+
+### Open transport question (unresolved — needs a live instance)
+
+**How an agent actually attaches this token to an outbound call to this
+gateway is not answered by source alone**, and this PR does not invent an
+answer. Paperclip generates a per-run MCP config with a bearer credential
+scoped to *its own* gateway; whether an agent's runtime can be configured to
+also attach a bearer header (this token) to a *different* outbound MCP/HTTP
+target — this gateway's `/api/agent/scheduler` — is unknown without a live
+Paperclip deployment to test against. This PR builds and tests the
+*receiving* side correctly (verify → resolve → broker) and stops there
+deliberately, rather than guessing at Paperclip's per-run MCP config
+mechanics.
+
+`packages/core/src/scheduler-client.ts`'s `HttpSchedulerClient.forward` is
+similarly an intentional `NotImplementedError` stub, for the same reason
+`PaperclipClient.createConversationIssue` is: the real downstream
+scheduler's request/response shape, endpoint path, and auth are not known
+from source. Wire the real call there once that's answered, following the
+same "one file owns the whole HTTP surface, validated with zod" convention
+as `HttpPaperclipClient`.
+
 ## Threat model
 
 **What this gateway protects against:**
@@ -192,12 +283,17 @@ definition ([`docs/deployment/sample-task-definition.json`](docs/deployment/samp
 ## Repo layout
 
 - `packages/core` — security kernel: identity resolution, the binding
-  table, per-agent credential storage, the Paperclip API client interface,
-  and the issue-backed session model. No auth-provider or transport code.
+  table (now bidirectional — employee→agent and agent→employee), per-agent
+  credential storage, the Paperclip API client interface, the issue-backed
+  session model, the agent run-token verifier (`agent-token.ts`), and the
+  downstream scheduler client interface (`scheduler-client.ts`). No
+  auth-provider or transport code.
 - `packages/auth-oidc` — generic OIDC adapter (`openid-client`). The only
   auth adapter in v1; anything OIDC-compliant works.
 - `packages/transport-web` — fastify API + session cookie + a minimal
-  React/Vite chat UI (login → chat pane → send → agent reply).
+  React/Vite chat UI (login → chat pane → send → agent reply), plus the
+  agent-facing identity-broker route (`routes/agent.ts`,
+  `POST /api/agent/scheduler`).
 - `apps/gateway` — composition root: wires the above together from env
   config, single Dockerfile.
 - `docs/paperclip-api.md` — the actual Paperclip API surface this gateway
@@ -230,6 +326,13 @@ are documented gaps:
 - The SSM-backed (or other secret-manager-backed) `AgentCredentialStore`
   mentioned as a future swap-in doesn't exist yet; v1 ships only the
   env-var- and file-backed implementations in `packages/core`.
+- Agent-facing broker (`POST /api/agent/scheduler`): the receiving side
+  (verify run token → resolve employee via `BindingTable` → broker) is real
+  and tested. Two things are explicitly not: how an agent's runtime attaches
+  this token to an outbound call in the first place (needs a live Paperclip
+  instance to answer — see "Open transport question" above), and the actual
+  downstream scheduler request shape (`HttpSchedulerClient.forward` is a
+  documented `NotImplementedError` stub).
 
 ## License
 

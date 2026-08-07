@@ -4,12 +4,16 @@ import {
   EnvAgentCredentialStore,
   FileAgentCredentialStore,
   HttpPaperclipClient,
+  HttpSchedulerClient,
   InMemorySessionStore,
+  StubSchedulerClient,
   type AgentCredentialStore,
+  type AgentTokenConfig,
+  type SchedulerClient,
 } from "@paperclip-chat-gateway/core";
 import { loadOidcConfigFromEnv, OidcAdapter, RealOidcPort } from "@paperclip-chat-gateway/auth-oidc";
 import { buildServer, type GatewayDeps } from "@paperclip-chat-gateway/transport-web";
-import { loadAppEnv, loadGatewayConfigFile, parseTrustProxy, toConfigEmployees } from "./config.js";
+import { loadAppEnv, loadGatewayConfigFile, parseBooleanEnv, parseTrustProxy, toConfigEmployees } from "./config.js";
 import { assertUiDistExists, resolveUiDistPath } from "./ui-dist.js";
 
 async function main() {
@@ -61,6 +65,22 @@ async function main() {
     }),
   );
 
+  const agentTokenConfig: AgentTokenConfig = {
+    secret: env.AGENT_JWT_SECRET,
+    instanceId: env.AGENT_JWT_INSTANCE_ID,
+    issuer: env.AGENT_JWT_ISSUER,
+    audience: env.AGENT_JWT_AUDIENCE,
+    disableLegacyFallback: parseBooleanEnv(env.AGENT_JWT_DISABLE_LEGACY_FALLBACK),
+  };
+
+  // Only wired to an HTTP client (which still throws NotImplementedError —
+  // see HttpSchedulerClient) once a base URL is actually configured;
+  // otherwise the broker route responds 501 via StubSchedulerClient rather
+  // than this composition root guessing at an endpoint that doesn't exist.
+  const schedulerClient: SchedulerClient = env.SCHEDULER_BASE_URL
+    ? new HttpSchedulerClient({ baseUrl: env.SCHEDULER_BASE_URL })
+    : new StubSchedulerClient();
+
   const deps: GatewayDeps = {
     oidc,
     bindings,
@@ -74,6 +94,8 @@ async function main() {
       const employee = await identityResolver.resolve({ subject: claims.subject, email: claims.email });
       return employee?.employeeId ?? null;
     },
+    agentTokenConfig,
+    schedulerClient,
   };
 
   const uiDistPath = resolveUiDistPath({ override: env.UI_DIST_PATH });

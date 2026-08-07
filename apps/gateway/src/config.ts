@@ -100,6 +100,28 @@ export interface AppEnv {
   /** Override for the UI static-assets directory; auto-resolved from the transport-web package when unset. */
   UI_DIST_PATH?: string;
   /**
+   * The master secret Paperclip agent run tokens are (indirectly) signed
+   * from — i.e. Paperclip's own `PAPERCLIP_AGENT_JWT_SECRET` /
+   * `BETTER_AUTH_SECRET`. This gateway and Paperclip must run in the same
+   * trust domain and share this value out-of-band via your secret store;
+   * there is no default. See README "Trust model" for why the downstream
+   * scheduler must NEVER be given this value.
+   */
+  AGENT_JWT_SECRET: string;
+  /** Paperclip control-plane instanceId whose tokens this gateway accepts. Defaults to "default" (the live plane). */
+  AGENT_JWT_INSTANCE_ID?: string;
+  AGENT_JWT_ISSUER?: string;
+  AGENT_JWT_AUDIENCE?: string;
+  AGENT_JWT_DISABLE_LEGACY_FALLBACK?: string;
+  /**
+   * Base URL of the downstream scheduler service the agent-facing broker
+   * route forwards resolved-identity calls to. Left unset in a deployment
+   * that hasn't wired up a real scheduler yet — the broker route responds
+   * 501 in that case instead of guessing at an endpoint. See README's "Open
+   * transport question."
+   */
+  SCHEDULER_BASE_URL?: string;
+  /**
    * Fastify `trustProxy` setting, forwarded verbatim to `buildServer`.
    * Leave unset (defaults to not trusting forwarded headers) unless this
    * gateway sits behind a reverse proxy you control that strips
@@ -124,7 +146,23 @@ const appEnvSchema = z.object({
   CREDENTIAL_STORE_FILE_PATH: z.string().optional(),
   UI_DIST_PATH: z.string().optional(),
   TRUST_PROXY: z.string().optional(),
+  // Never a default: a deployment without this set cannot verify any agent
+  // run token, which is the fail-closed posture we want for a brand-new
+  // capability rather than silently accepting an unsigned/empty secret.
+  AGENT_JWT_SECRET: z.string().min(32, "AGENT_JWT_SECRET must be at least 32 characters"),
+  AGENT_JWT_INSTANCE_ID: z.string().optional(),
+  AGENT_JWT_ISSUER: z.string().optional(),
+  AGENT_JWT_AUDIENCE: z.string().optional(),
+  AGENT_JWT_DISABLE_LEGACY_FALLBACK: z.string().optional(),
+  SCHEDULER_BASE_URL: z.string().url().optional(),
 });
+
+/** Parses a "1"/"true"/"yes"/"on" (case-insensitive) style boolean env var. Anything else, including unset, is false. */
+export function parseBooleanEnv(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
 
 /** Parses AppEnv.TRUST_PROXY into the shape Fastify's trustProxy option expects. */
 export function parseTrustProxy(value: string | undefined): boolean | string | string[] | number | undefined {

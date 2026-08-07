@@ -55,9 +55,11 @@ export class DuplicateAgentBindingError extends Error {
 
 export class BindingTable {
   private readonly byEmployeeId: ReadonlyMap<string, string>;
+  private readonly byAgentId: ReadonlyMap<string, string>;
 
-  private constructor(byEmployeeId: ReadonlyMap<string, string>) {
+  private constructor(byEmployeeId: ReadonlyMap<string, string>, byAgentId: ReadonlyMap<string, string>) {
     this.byEmployeeId = byEmployeeId;
+    this.byAgentId = byAgentId;
   }
 
   /**
@@ -65,11 +67,17 @@ export class BindingTable {
    * contents) into a BindingTable. Throws on malformed shape or duplicate
    * employee/agent entries — fail closed, never fail open. The 1:1
    * invariant is enforced in both directions: no employee may have two
-   * bindings, and no agent may be bound to two employees.
+   * bindings, and no agent may be bound to two employees. That bidirectional
+   * enforcement is also what makes the reverse lookup (`resolveEmployeeFor`)
+   * safe: because construction already rejects any config where two
+   * employees map to the same agentId, the reverse map built here can never
+   * contain an ambiguous entry — there is no "pick one" branch anywhere in
+   * this class.
    */
   static fromConfig(raw: unknown): BindingTable {
     const parsed = bindingTableConfigSchema.parse(raw);
     const map = new Map<string, string>();
+    const reverseMap = new Map<string, string>();
     const seenAgentIds = new Set<string>();
     for (const entry of parsed.bindings) {
       if (map.has(entry.employeeId)) {
@@ -80,12 +88,13 @@ export class BindingTable {
       }
       seenAgentIds.add(entry.agentId);
       map.set(entry.employeeId, entry.agentId);
+      reverseMap.set(entry.agentId, entry.employeeId);
     }
-    return new BindingTable(map);
+    return new BindingTable(map, reverseMap);
   }
 
   static empty(): BindingTable {
-    return new BindingTable(new Map());
+    return new BindingTable(new Map(), new Map());
   }
 
   /**
@@ -96,6 +105,20 @@ export class BindingTable {
    */
   resolveAgentFor(employeeId: string): string | null {
     return this.byEmployeeId.get(employeeId) ?? null;
+  }
+
+  /**
+   * Reverse lookup: given an agentId (e.g. the `sub` claim out of a verified
+   * agent run token), returns the single employee it is bound to, or `null`
+   * if the agentId is unknown. Deny-by-default like `resolveAgentFor` — an
+   * agentId not present in this table (whether never configured, or dropped
+   * from config) resolves to `null`, never a guess. Ambiguity ("two
+   * employees map to one agent") cannot occur here: it is rejected at
+   * `fromConfig` time by `DuplicateAgentBindingError`, so this method never
+   * needs its own tie-breaking logic.
+   */
+  resolveEmployeeFor(agentId: string): string | null {
+    return this.byAgentId.get(agentId) ?? null;
   }
 
   /**

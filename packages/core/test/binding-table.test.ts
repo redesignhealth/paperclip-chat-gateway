@@ -71,4 +71,41 @@ describe("BindingTable", () => {
     expect(empty.resolveAgentFor("emp-alice")).toBeNull();
     expect(empty.isAuthorized("emp-alice", "agent-alice-cfo")).toBe(false);
   });
+
+  describe("resolveEmployeeFor — reverse lookup (agent -> employee)", () => {
+    it("resolves the bound employee for a known agentId", () => {
+      expect(table.resolveEmployeeFor("agent-alice-cfo")).toBe("emp-alice");
+      expect(table.resolveEmployeeFor("agent-bob-eng")).toBe("emp-bob");
+    });
+
+    it("denies by default for an unknown agentId", () => {
+      expect(table.resolveEmployeeFor("agent-does-not-exist")).toBeNull();
+    });
+
+    it("is a true inverse of resolveAgentFor for every bound pair", () => {
+      for (const [employeeId, agentId] of [
+        ["emp-alice", "agent-alice-cfo"],
+        ["emp-bob", "agent-bob-eng"],
+      ] as const) {
+        expect(table.resolveAgentFor(employeeId)).toBe(agentId);
+        expect(table.resolveEmployeeFor(agentId)).toBe(employeeId);
+      }
+    });
+
+    it("empty table denies every reverse lookup too", () => {
+      const empty = BindingTable.empty();
+      expect(empty.resolveEmployeeFor("agent-alice-cfo")).toBeNull();
+    });
+
+    it("an ambiguous agent binding (two employees, one agent) is rejected at load time, so reverse lookup can never be ambiguous", () => {
+      expect(() =>
+        BindingTable.fromConfig({
+          bindings: [
+            { employeeId: "emp-alice", agentId: "agent-shared" },
+            { employeeId: "emp-bob", agentId: "agent-shared" },
+          ],
+        }),
+      ).toThrow(DuplicateAgentBindingError);
+    });
+  });
 });
