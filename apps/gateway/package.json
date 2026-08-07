@@ -1,0 +1,23 @@
+{
+  "name": "@paperclip-chat-gateway/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput & node --watch dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@paperclip-chat-gateway/auth-oidc": "workspace:*",
+    "@paperclip-chat-gateway/core": "workspace:*",
+    "@paperclip-chat-gateway/transport-web": "workspace:*",
+    "pino": "^9.6.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}
