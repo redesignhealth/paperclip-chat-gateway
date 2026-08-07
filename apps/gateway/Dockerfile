@@ -3,7 +3,15 @@
 # For production, prefer pinning to this tag's immutable digest as well
 # (`docker pull` it once and copy the sha256 here).
 FROM node:22.12.0-bookworm-slim AS base
-RUN corepack enable
+# The Corepack build bundled with this Node image ships a stale set of npm
+# registry signing keys, so it rejects the signature on current pnpm
+# tarballs with "Cannot find matching keyid". Upgrading Corepack itself
+# (rather than pinning COREPACK_INTEGRITY_KEYS or disabling verification)
+# pulls in current keys and keeps working as npm rotates them in the
+# future. Do not "simplify" this away or replace it with
+# COREPACK_INTEGRITY_KEYS=0 — that would drop signature verification on a
+# package-manager download for an auth gateway.
+RUN npm install -g corepack@latest && corepack enable
 WORKDIR /app
 
 FROM base AS deps
@@ -23,6 +31,9 @@ RUN pnpm --filter @paperclip-chat-gateway/core run build \
  && pnpm deploy --filter @paperclip-chat-gateway/gateway --prod /app/deploy
 
 FROM node:22.12.0-bookworm-slim AS runtime
+# No pnpm/corepack usage at runtime (the built app is copied in as plain
+# JS and started with `node`), so the Corepack signing-key upgrade above
+# doesn't need to be repeated here.
 RUN groupadd --system gateway && useradd --system --gid gateway --home-dir /app gateway
 WORKDIR /app
 COPY --from=build --chown=gateway:gateway /app/deploy ./
