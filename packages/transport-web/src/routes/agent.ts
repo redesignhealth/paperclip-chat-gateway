@@ -40,6 +40,13 @@ async function authenticateAgentCall(
   reply: FastifyReply,
   deps: GatewayDeps,
 ): Promise<AuthenticatedAgentCall | null> {
+  // Callers only reach this function once registerAgentRoutes has confirmed
+  // agentTokenConfig/schedulerClient are present (see below) — asserted here
+  // only to satisfy the type checker inside the still-optional GatewayDeps shape.
+  if (!deps.agentTokenConfig) {
+    throw new Error("authenticateAgentCall invoked without agentTokenConfig; this is a bug in route registration");
+  }
+
   const token = extractBearerToken(req);
   if (!token) {
     reply.code(401).send({ error: "Missing bearer token." });
@@ -85,20 +92,31 @@ const brokerRequestSchema = z.object({
  * routes authenticate a human and call out to Paperclip on their behalf;
  * this route authenticates a Paperclip agent run and calls out to the
  * downstream scheduler on behalf of the human that agent is bound to.
+ *
+ * OPT-IN: registers nothing at all when `deps.agentTokenConfig` is unset —
+ * see `GatewayDeps.agentTokenConfig`. A deployment that hasn't configured
+ * the agent broker gets no `/api/agent/scheduler` route (404, not a
+ * confusing 401/501) and every other route is unaffected.
  */
 export function registerAgentRoutes(app: FastifyInstance, deps: GatewayDeps): void {
+  if (!deps.agentTokenConfig || !deps.schedulerClient) {
+    app.log.info("agent broker disabled (AGENT_JWT_SECRET not configured) — /api/agent/scheduler not registered");
+    return;
+  }
+
   app.post("/api/agent/scheduler", async (req, reply) => {
     const auth = await authenticateAgentCall(req, reply, deps);
     if (!auth) return;
 
     const parsed = brokerRequestSchema.safeParse(req.body);
     if (!parsed.success) {
-      reply.code(400).send({ error: parsed.error.message });
+      req.log.warn({ err: parsed.error.message }, "agent broker request body failed validation");
+      reply.code(400).send({ error: "Invalid request body." });
       return;
     }
 
     try {
-      const result = await deps.schedulerClient.forward({
+      const result = await deps.schedulerClient!.forward({
         employeeId: auth.employeeId,
         agentId: auth.agentId,
         runId: auth.runId,
@@ -109,7 +127,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: GatewayDeps): vo
     } catch (error) {
       if (error instanceof NotImplementedError) {
         req.log.warn({ err: error.message }, "downstream scheduler call not implemented");
-        reply.code(501).send({ error: error.message });
+        reply.code(501).send({ error: "Downstream scheduler is not configured for this deployment." });
         return;
       }
       throw error;

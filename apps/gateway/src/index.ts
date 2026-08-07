@@ -13,7 +13,15 @@ import {
 } from "@paperclip-chat-gateway/core";
 import { loadOidcConfigFromEnv, OidcAdapter, RealOidcPort } from "@paperclip-chat-gateway/auth-oidc";
 import { buildServer, type GatewayDeps } from "@paperclip-chat-gateway/transport-web";
-import { loadAppEnv, loadGatewayConfigFile, parseBooleanEnv, parseTrustProxy, toConfigEmployees } from "./config.js";
+import {
+  isAgentBrokerEnabled,
+  loadAppEnv,
+  loadGatewayConfigFile,
+  parseBooleanEnv,
+  parseCompanyIdAllowlist,
+  parseTrustProxy,
+  toConfigEmployees,
+} from "./config.js";
 import { assertUiDistExists, resolveUiDistPath } from "./ui-dist.js";
 
 async function main() {
@@ -65,18 +73,34 @@ async function main() {
     }),
   );
 
-  const agentTokenConfig: AgentTokenConfig = {
-    secret: env.AGENT_JWT_SECRET,
-    instanceId: env.AGENT_JWT_INSTANCE_ID,
-    issuer: env.AGENT_JWT_ISSUER,
-    audience: env.AGENT_JWT_AUDIENCE,
-    disableLegacyFallback: parseBooleanEnv(env.AGENT_JWT_DISABLE_LEGACY_FALLBACK),
-  };
+  // The agent-facing identity broker is opt-in: absent AGENT_JWT_SECRET
+  // means this deployment doesn't broker for any agents, and the gateway
+  // starts normally with /api/agent/scheduler simply not registered (see
+  // registerAgentRoutes). loadAppEnv() has already strictly validated every
+  // AGENT_JWT_*/SCHEDULER_BASE_URL setting together when the secret IS set.
+  const brokerEnabled = isAgentBrokerEnabled(env);
+  const agentTokenConfig: AgentTokenConfig | undefined = brokerEnabled
+    ? {
+        secret: env.AGENT_JWT_SECRET!,
+        expectedCompanyIds: parseCompanyIdAllowlist(env.AGENT_JWT_COMPANY_ID),
+        instanceId: env.AGENT_JWT_INSTANCE_ID,
+        issuer: env.AGENT_JWT_ISSUER,
+        audience: env.AGENT_JWT_AUDIENCE,
+        enableLegacyFallback: parseBooleanEnv(env.AGENT_JWT_ENABLE_LEGACY_FALLBACK),
+        clockToleranceSeconds: env.AGENT_JWT_CLOCK_TOLERANCE_SECONDS
+          ? Number(env.AGENT_JWT_CLOCK_TOLERANCE_SECONDS)
+          : undefined,
+        maxTokenAgeSeconds: env.AGENT_JWT_MAX_TOKEN_AGE_SECONDS
+          ? Number(env.AGENT_JWT_MAX_TOKEN_AGE_SECONDS)
+          : undefined,
+      }
+    : undefined;
 
   // Only wired to an HTTP client (which still throws NotImplementedError —
   // see HttpSchedulerClient) once a base URL is actually configured;
   // otherwise the broker route responds 501 via StubSchedulerClient rather
   // than this composition root guessing at an endpoint that doesn't exist.
+  // Irrelevant when the broker itself is disabled, but harmless to build.
   const schedulerClient: SchedulerClient = env.SCHEDULER_BASE_URL
     ? new HttpSchedulerClient({ baseUrl: env.SCHEDULER_BASE_URL })
     : new StubSchedulerClient();
@@ -114,6 +138,18 @@ async function main() {
   app.log.info(
     { port, agents: bindings.size(), trustProxy: trustProxy ?? false },
     "paperclip-chat-gateway listening",
+  );
+  // Explicit, unmissable startup line for which trust-boundary mode this
+  // deployment is in — the agent broker is opt-in (see AppEnv.AGENT_JWT_SECRET),
+  // so an operator scanning logs should never have to infer this from the
+  // absence of a route-registration log line alone.
+  app.log.info(
+    brokerEnabled
+      ? { expectedCompanyIds: agentTokenConfig?.expectedCompanyIds }
+      : {},
+    brokerEnabled
+      ? "agent identity broker ENABLED — /api/agent/scheduler is live"
+      : "agent identity broker DISABLED (AGENT_JWT_SECRET not set) — /api/agent/scheduler is not registered",
   );
 }
 

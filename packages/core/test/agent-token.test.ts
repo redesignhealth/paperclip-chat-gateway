@@ -28,7 +28,8 @@ interface MintOptions {
   iat?: number;
   exp?: number;
   iss?: string;
-  aud?: string;
+  aud?: string | string[];
+  nbf?: number;
   alg?: string;
   /** Sign with the raw master secret instead of the per-company derived key (legacy path). */
   legacySigning?: boolean;
@@ -52,6 +53,7 @@ function mintToken(masterSecret: string, instanceId: string, opts: MintOptions =
     exp: opts.exp ?? now + 3600,
     ...(opts.iss ? { iss: opts.iss } : {}),
     ...(opts.aud ? { aud: opts.aud } : {}),
+    ...(opts.nbf !== undefined ? { nbf: opts.nbf } : {}),
   };
   const signingInput = `${base64UrlEncodeJson(header)}.${base64UrlEncodeJson(claims)}`;
   const signingKey =
@@ -61,7 +63,11 @@ function mintToken(masterSecret: string, instanceId: string, opts: MintOptions =
   return `${signingInput}.${signature}`;
 }
 
-const baseConfig: AgentTokenConfig = { secret: MASTER_SECRET, instanceId: INSTANCE_ID };
+const baseConfig: AgentTokenConfig = {
+  secret: MASTER_SECRET,
+  instanceId: INSTANCE_ID,
+  expectedCompanyIds: ["company-1"],
+};
 
 describe("verifyAgentRunToken — happy path", () => {
   it("resolves agentId and runId for a validly-signed token", async () => {
@@ -70,15 +76,93 @@ describe("verifyAgentRunToken — happy path", () => {
     expect(result).toEqual({ agentId: "agent-alice-cfo", runId: "run-abc" });
   });
 
-  it("verifies via the legacy raw-master-secret fallback when the per-company key doesn't match", async () => {
+  it("does NOT verify via the legacy raw-master-secret fallback by default (fail closed)", async () => {
     const token = mintToken(MASTER_SECRET, INSTANCE_ID, { legacySigning: true });
+    await expect(verifyAgentRunToken(token, baseConfig)).rejects.toThrow(AgentTokenVerificationError);
+  });
+
+  it("verifies via the legacy raw-master-secret fallback only when enableLegacyFallback is explicitly set", async () => {
+    const token = mintToken(MASTER_SECRET, INSTANCE_ID, { legacySigning: true });
+    const result = await verifyAgentRunToken(token, { ...baseConfig, enableLegacyFallback: true });
+    expect(result.agentId).toBe("agent-alice-cfo");
+  });
+
+  it("accepts an aud claim that is an array containing the configured audience (RFC 7519)", async () => {
+    const token = mintToken(MASTER_SECRET, INSTANCE_ID, { aud: ["paperclip-api", "something-else"] });
+    const result = await verifyAgentRunToken(token, { ...baseConfig, audience: "paperclip-api" });
+    expect(result.agentId).toBe("agent-alice-cfo");
+  });
+
+  it("rejects an aud array that does not contain the configured audience", async () => {
+    const token = mintToken(MASTER_SECRET, INSTANCE_ID, { aud: ["someone-elses-api"] });
+    await expect(verifyAgentRunToken(token, { ...baseConfig, audience: "paperclip-api" })).rejects.toThrow(
+      AgentTokenVerificationError,
+    );
+  });
+});
+
+describe("verifyAgentRunToken — nbf, max age, and clock skew", () => {
+  it("rejects a token whose nbf is in the future beyond the clock tolerance", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = mintToken(MASTER_SECRET, INSTANCE_ID, { nbf: now + 3600 });
+    await expect(verifyAgentRunToken(token, baseConfig)).rejects.toThrow(AgentTokenVerificationError);
+  });
+
+  it("accepts a token whose nbf is in the past", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = mintToken(MASTER_SECRET, INSTANCE_ID, { nbf: now - 60 });
     const result = await verifyAgentRunToken(token, baseConfig);
     expect(result.agentId).toBe("agent-alice-cfo");
   });
 
-  it("rejects the legacy fallback path when disableLegacyFallback is set", async () => {
-    const token = mintToken(MASTER_SECRET, INSTANCE_ID, { legacySigning: true });
-    await expect(verifyAgentRunToken(token, { ...baseConfig, disableLegacyFallback: true })).rejects.toThrow(
+  it("accepts an exp slightly in the past within the configured clock tolerance", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = mintToken(MASTER_SECRET, INSTANCE_ID, { iat: now - 10, exp: now - 2 });
+    const result = await verifyAgentRunToken(token, { ...baseConfig, clockToleranceSeconds: 5 });
+    expect(result.agentId).toBe("agent-alice-cfo");
+  });
+
+  it("still rejects an exp further in the past than the configured clock tolerance", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = mintToken(MASTER_SECRET, INSTANCE_ID, { iat: now - 3600, exp: now - 30 });
+    await expect(verifyAgentRunToken(token, { ...baseConfig, clockToleranceSeconds: 5 })).rejects.toThrow(
+      AgentTokenVerificationError,
+    );
+  });
+
+  it("rejects a token older than maxTokenAgeSeconds even though exp hasn't passed", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = mintToken(MASTER_SECRET, INSTANCE_ID, { iat: now - 7200, exp: now + 3600 });
+    await expect(
+      verifyAgentRunToken(token, { ...baseConfig, maxTokenAgeSeconds: 3600 }),
+    ).rejects.toThrow(AgentTokenVerificationError);
+  });
+
+  it("accepts a token within maxTokenAgeSeconds", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = mintToken(MASTER_SECRET, INSTANCE_ID, { iat: now - 60, exp: now + 3600 });
+    const result = await verifyAgentRunToken(token, { ...baseConfig, maxTokenAgeSeconds: 3600 });
+    expect(result.agentId).toBe("agent-alice-cfo");
+  });
+});
+
+describe("verifyAgentRunToken — company scoping", () => {
+  it("rejects a validly-signed token for a company not on this gateway's allowlist", async () => {
+    const token = mintToken(MASTER_SECRET, INSTANCE_ID, { companyId: "company-evil" });
+    await expect(verifyAgentRunToken(token, { ...baseConfig, expectedCompanyIds: ["company-1"] })).rejects.toThrow(
+      AgentTokenVerificationError,
+    );
+  });
+
+  it("accepts a validly-signed token for a company on this gateway's allowlist", async () => {
+    const token = mintToken(MASTER_SECRET, INSTANCE_ID, { companyId: "company-2" });
+    const result = await verifyAgentRunToken(token, { ...baseConfig, expectedCompanyIds: ["company-1", "company-2"] });
+    expect(result.agentId).toBe("agent-alice-cfo");
+  });
+
+  it("fails closed when the gateway itself has no expectedCompanyIds configured", async () => {
+    const token = mintToken(MASTER_SECRET, INSTANCE_ID, { companyId: "company-1" });
+    await expect(verifyAgentRunToken(token, { ...baseConfig, expectedCompanyIds: [] })).rejects.toThrow(
       AgentTokenVerificationError,
     );
   });

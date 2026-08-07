@@ -75,12 +75,34 @@ Paperclip's `server/src/agent-auth-jwt.ts`:
   produces a verifier that silently rejects every real token). Paperclip
   also accepts a fallback verification against the raw master secret, for
   tokens minted before per-company derivation existed; this gateway mirrors
-  that fallback too, and exposes the same "disable it once you're sure
-  nothing legacy is outstanding" knob (`AGENT_JWT_DISABLE_LEGACY_FALLBACK`).
+  that fallback too, but — unlike Paperclip's own default — ships it
+  **disabled by default**, requiring an explicit opt-in
+  (`AGENT_JWT_ENABLE_LEGACY_FALLBACK=true`) rather than an explicit opt-out,
+  since any holder of the raw master secret can mint tokens accepted via
+  that path.
 - There is no JWKS/asymmetric option and no introspection endpoint. HS256
   shared-secret verification is the only cryptographic option available —
   this gateway and Paperclip must run in the **same trust domain** and share
   `AGENT_JWT_SECRET` out of band via a real secret store.
+- `company_id` is read from the token's own unverified claims to pick a
+  candidate key, but the value is also checked against this deployment's own
+  `AGENT_JWT_COMPANY_ID` allowlist *before* that key is derived. A
+  validly-signed token minted by Paperclip for a different company on the
+  same control-plane instance is rejected outright — it never gets a chance
+  to pick a signature-verifying key. This allowlist is required whenever the
+  broker is enabled; there is no "trust whatever company_id says" fallback.
+
+### The broker is opt-in
+
+`AGENT_JWT_SECRET` has no default, and leaving it unset does not fail
+startup — it disables this whole feature. A gateway deployment with no
+agent-broker settings starts normally with `/api/agent/scheduler` simply
+not registered (404, not 401/501). Setting `AGENT_JWT_SECRET` turns the
+broker on and triggers strict validation of `AGENT_JWT_COMPANY_ID` (required)
+and `AGENT_JWT_ISSUER`/`AGENT_JWT_AUDIENCE` (at least one required) at boot
+— see `apps/gateway/.env.example` for the full set of `AGENT_JWT_*` settings
+and `apps/gateway/src/index.ts` for the startup log line that states plainly
+which mode (`ENABLED`/`DISABLED`) a running instance is in.
 
 ### Trust model — read this before wiring anything to the broker route
 

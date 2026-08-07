@@ -31,8 +31,13 @@ export interface GatewayDeps {
    * route (`/api/agent/scheduler`) — the reverse direction of every other
    * route in this package, which authenticate a human and reach out to
    * Paperclip.
+   *
+   * OPT-IN: the agent-facing broker is a whole separate feature from the
+   * rest of this gateway. When this is `undefined`, `registerAgentRoutes`
+   * does not register `/api/agent/scheduler` at all, and every other route
+   * in this package works exactly as if the agent broker didn't exist.
    */
-  agentTokenConfig: AgentTokenConfig;
-  /** Downstream scheduler client the broker route forwards resolved-identity calls to. */
-  schedulerClient: SchedulerClient;
+  agentTokenConfig?: AgentTokenConfig;
+  /** Downstream scheduler client the broker route forwards resolved-identity calls to. Only used when `agentTokenConfig` is set. */
+  schedulerClient?: SchedulerClient;
 }

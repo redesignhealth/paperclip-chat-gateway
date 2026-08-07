@@ -85,7 +85,11 @@ const OIDC_CONFIG = {
   allowedEmailDomains: ["redesignhealth.com"],
 };
 
-const agentTokenConfig: AgentTokenConfig = { secret: MASTER_SECRET, instanceId: INSTANCE_ID };
+const agentTokenConfig: AgentTokenConfig = {
+  secret: MASTER_SECRET,
+  instanceId: INSTANCE_ID,
+  expectedCompanyIds: ["company-1"],
+};
 
 function makeDeps(overrides: Partial<GatewayDeps> = {}): GatewayDeps {
   const bindings = BindingTable.fromConfig({
@@ -165,6 +169,40 @@ describe("POST /api/agent/scheduler — authentication", () => {
       payload: { action: "ping" },
     });
     expect(res.statusCode).toBe(403);
+  });
+
+  it("rejects a validly-signed token for a company_id not on this gateway's allowlist", async () => {
+    const token = mintAgentToken({ sub: "agent-alice-cfo", runId: "run-1", companyId: "company-not-allowed" });
+    const app = await buildServer({ deps: makeDeps() });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/agent/scheduler",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { action: "ping" },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+});
+
+describe("POST /api/agent/scheduler — opt-in broker", () => {
+  it("is not registered at all when agentTokenConfig is unset (404, gateway otherwise unaffected)", async () => {
+    const app = await buildServer({
+      deps: makeDeps({ agentTokenConfig: undefined, schedulerClient: undefined }),
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/agent/scheduler",
+      payload: { action: "ping" },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("still serves other routes normally when the agent broker is disabled", async () => {
+    const app = await buildServer({
+      deps: makeDeps({ agentTokenConfig: undefined, schedulerClient: undefined }),
+    });
+    const res = await app.inject({ method: "GET", url: "/health" });
+    expect(res.statusCode).toBe(200);
   });
 });
 
