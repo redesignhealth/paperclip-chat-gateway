@@ -1,5 +1,40 @@
 # paperclip-chat-gateway
 
+> **Status: paused, not abandoned.** As of August 2026 this project is not being actively
+> developed or deployed. It is not archived — the code, docs, and history stay here because
+> the design work has value beyond this specific service.
+>
+> **What it was for:** giving each human a private, free-text chat channel to *their own*
+> Paperclip agent and nobody else's — something Paperclip's company-scoped access model and
+> chat-less agent design didn't provide on their own (see below).
+>
+> **Why it was retired:** two of the three reasons this service existed are being addressed
+> upstream in Paperclip itself — a chat UI and SSO (see [paperclip PR #3040](https://github.com/paperclipai/paperclip/pull/3040))
+> are landing there directly. The third reason, per-agent access isolation, turned out not to
+> be enforceable from a standalone gateway at all: a logged-in colleague can drive a Paperclip
+> agent directly — commenting on an assigned issue, hitting `/agents/:id/wakeup`, checkout,
+> retry-now, approvals — none of which routes through an external service, so the gateway could
+> never be the sole wake principal it was designed to be. Agent ownership and access control are
+> being fixed at the source instead: inside Paperclip's own permission model. Once that lands,
+> a sidecar gateway holding bindings and per-agent credentials is no longer necessary.
+>
+> **What's still worth reusing from this repo**, independent of whether you run this exact
+> service:
+> - The threat model in [`docs/`](./docs) — worth reading even if you never deploy this gateway.
+> - The deny-by-default binding discipline in `packages/core`'s `BindingTable` — every human/agent
+>   pairing starts denied and must be explicitly granted, rather than defaulting open.
+> - The "one free-text channel per person" principle: if a platform's access model is
+>   company/team-scoped, don't try to bolt per-person isolation onto it without a component that
+>   can actually enforce hard 1:1 lookups end-to-end.
+> - Three narrow, generically useful fixes buried in the history: a Corepack signing-key
+>   Dockerfile fix (`apps/gateway/Dockerfile`), a CI ordering fix that runs `build` before
+>   `typecheck` (`.github/workflows/ci.yml`) instead of the other way around, and making
+>   `requireVerifiedEmail` configurable (`packages/auth-oidc`, `apps/gateway/src/config.ts`) for
+>   IdPs like Okta that never set `email_verified` for directory-provisioned users.
+>
+> If you're evaluating a similar per-agent chat gateway design, the code and docs below are a
+> complete, working reference — they're just not the path we're taking with Paperclip anymore.
+
 A standalone, transport-agnostic chat gateway for [Paperclip](https://github.com/paperclipai/paperclip) agents.
 
 **The problem:** Paperclip deliberately has no chat surface ("agents have jobs, not chat windows"), and its access model is company-scoped — there is no built-in way to give each human a private, free-text channel to *their own* agent and nobody else's.
