@@ -79,11 +79,20 @@ async function main() {
   const uiDistPath = resolveUiDistPath({ override: env.UI_DIST_PATH });
   await assertUiDistExists(uiDistPath);
 
-  const app = await buildServer({ deps, uiDistPath, trustProxy: parseTrustProxy(env.TRUST_PROXY) });
+  const trustProxy = parseTrustProxy(env.TRUST_PROXY);
+  const app = await buildServer({ deps, uiDistPath, trustProxy });
 
   const port = Number(env.PORT);
   await app.listen({ port, host: "0.0.0.0" });
-  app.log.info({ port, agents: bindings.size() }, "paperclip-chat-gateway listening");
+  // Logged explicitly (not just implied by TRUST_PROXY being set) so a
+  // misconfigured reverse-proxy deployment — e.g. OIDC redirects coming
+  // back with the wrong scheme/host because forwarded headers aren't being
+  // trusted — is diagnosable from the logs without having to go re-check
+  // env vars by hand. See README's "Reverse proxies and TRUST_PROXY".
+  app.log.info(
+    { port, agents: bindings.size(), trustProxy: trustProxy ?? false },
+    "paperclip-chat-gateway listening",
+  );
 }
 
 main().catch((error) => {

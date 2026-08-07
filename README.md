@@ -119,6 +119,65 @@ Run tests:
 pnpm test
 ```
 
+## Running the built image
+
+`apps/gateway/Dockerfile` builds an image that intentionally ships with
+**no config or credentials baked in** — `.dockerignore` excludes
+`apps/gateway/config/gateway.json`, `apps/gateway/.env`, and any
+`*credentials*.json` from the build context, so none of that
+deployment-specific/secret material ever lands in an image layer or a
+registry push. You must provide them at **runtime**:
+
+```sh
+docker build -t paperclip-chat-gateway apps/gateway/.. # from repo root
+docker run \
+  -p 3000:3000 \
+  --env-file /path/to/real.env \
+  -v /path/to/real/gateway.json:/app/config/gateway.json:ro \
+  paperclip-chat-gateway
+```
+
+- The employee roster + bindings file is read from `GATEWAY_CONFIG_PATH`
+  (default `./config/gateway.json`, i.e. `/app/config/gateway.json` in the
+  container). Mount a real file there, or set `GATEWAY_CONFIG_PATH` to a
+  different mounted path. See `apps/gateway/config/gateway.example.json`
+  for the shape (obviously-fake values; it's the one config file that
+  *is* included in the image, purely as a discoverable reference).
+- If `CREDENTIAL_STORE_KIND=file`, the credential file is read from
+  `CREDENTIAL_STORE_FILE_PATH` and must be mounted the same way; the
+  default `CREDENTIAL_STORE_KIND=env` instead reads
+  `PAPERCLIP_AGENT_KEY__<encoded agentId>` env vars (pass via `--env-file`
+  or your orchestrator's secret store — never `COPY`'d into the image).
+- Starting the container without a config at the resolved path fails fast
+  with a `GatewayConfigError` that names `GATEWAY_CONFIG_PATH` and the
+  exact path it looked at, instead of an opaque crash.
+
+### Reverse proxies and `TRUST_PROXY`
+
+By default the gateway does **not** trust `X-Forwarded-*` headers
+(`TRUST_PROXY` unset → Fastify's `trustProxy: false`). That's the safe
+default for a gateway exposed directly, or behind a proxy you don't fully
+control — trusting those headers blindly would let any client spoof
+`req.protocol`/`req.hostname` (which feed into the OIDC callback URL) by
+setting the headers itself.
+
+If you run this behind a reverse proxy or load balancer that terminates
+TLS and sets `X-Forwarded-*` (and, critically, **strips** any
+client-supplied values first), set `TRUST_PROXY` so OIDC redirects and
+logging see the real client-facing protocol/host:
+
+- `TRUST_PROXY=true` — trust any forwarded headers (only safe if nothing
+  upstream of your proxy can reach the gateway directly)
+- `TRUST_PROXY=10.0.0.1` or a comma-separated list — trust only specific
+  proxy IPs/CIDRs (preferred)
+- `TRUST_PROXY=1` — trust a hop count instead of an IP list
+
+At startup the gateway logs the active mode (`{"trustProxy": ...}` in the
+`"listening"` log line) so a deployment that's misbehaving because of a
+proxy-trust mismatch (e.g. OIDC redirect URIs coming back with the wrong
+scheme/host) is diagnosable from the logs alone, without having to check
+the env var configuration by hand.
+
 ## Repo layout
 
 - `packages/core` — security kernel: identity resolution, the binding

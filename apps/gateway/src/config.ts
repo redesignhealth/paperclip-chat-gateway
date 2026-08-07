@@ -38,7 +38,19 @@ export async function loadGatewayConfigFile(filePath: string): Promise<GatewayCo
   try {
     contents = await readFile(filePath, "utf8");
   } catch (error) {
-    throw new GatewayConfigError(`Could not read gateway config file at "${filePath}": ${(error as Error).message}`);
+    // This is the config the built Docker image expects to find at
+    // runtime; it is deliberately excluded from the build context (see
+    // .dockerignore + apps/gateway/Dockerfile) and must be provided at
+    // deploy time via a volume mount or a GATEWAY_CONFIG_PATH override.
+    // Name both the env var and the resolved path so an operator with a
+    // freshly-built image and no mount gets a startup error that tells
+    // them exactly what to fix, not a generic ENOENT.
+    throw new GatewayConfigError(
+      `Could not read gateway config file at "${filePath}" (resolved from GATEWAY_CONFIG_PATH, ` +
+        `default "./config/gateway.json"): ${(error as Error).message}. ` +
+        "This file is not baked into the Docker image (see config/gateway.example.json for its shape) " +
+        "— mount a real config file at this path, or set GATEWAY_CONFIG_PATH to point at one, before starting.",
+    );
   }
 
   let json: unknown;

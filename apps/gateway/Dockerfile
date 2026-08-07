@@ -35,6 +35,19 @@ COPY --from=build --chown=gateway:gateway /app/deploy ./
 # repo's source layout. Get this wrong and `assertUiDistExists` fails fast
 # at startup with a clear error instead of a runtime 404 on every page load.
 COPY --from=build --chown=gateway:gateway /app/packages/transport-web/ui/dist ./node_modules/@paperclip-chat-gateway/transport-web/ui/dist
+# Gateway config and per-agent credentials are deliberately NOT baked into
+# this image (see .dockerignore: apps/gateway/config/gateway.json and any
+# *credentials*.json are excluded from the build context). They contain
+# per-deployment employee rosters, employee->agent bindings, and secrets,
+# so they must be provided at RUNTIME instead:
+#   - mount a real config at the default path, e.g.
+#       docker run -v /path/to/gateway.json:/app/config/gateway.json:ro ...
+#   - or override the path with GATEWAY_CONFIG_PATH (and
+#     CREDENTIAL_STORE_FILE_PATH if CREDENTIAL_STORE_KIND=file)
+# See config/gateway.example.json for the config file's shape, and the
+# README's "Running the built image" section for the full contract.
+# Starting the image without one fails fast with a GatewayConfigError that
+# names the env var and the path it looked at (apps/gateway/src/config.ts).
 ENV NODE_ENV=production
 USER gateway
 EXPOSE 3000

@@ -4,9 +4,19 @@ node_modules
 **/coverage
 .git
 .github
-.env
-.env.*
-!.env.example
+# Docker's .dockerignore matcher only applies a bare pattern (no leading
+# `**/`) at the build-context ROOT — unlike .gitignore, it is NOT implicitly
+# recursive. `.env` here would NOT exclude `apps/gateway/.env`. Every pattern
+# below is written `**/<name>` so it matches at any depth. Verified with:
+#   docker build -f /tmp/probe.Dockerfile -t probe . && \
+#   docker run --rm probe find /ctx -iname '.env*' -o -iname '*.pem' ...
+**/.env
+**/.env.*
+!**/.env.example
 apps/gateway/config/gateway.json
-apps/gateway/config/agent-credentials.json
-*.log
+# Anything else that can hold secrets/keys, excluded at any depth too
+# (also covers agent-credentials.json wherever it lives).
+**/*.pem
+**/*.key
+**/*credentials*.json
+**/*.log

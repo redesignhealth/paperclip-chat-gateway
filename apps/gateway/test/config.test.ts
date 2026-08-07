@@ -47,6 +47,20 @@ describe("loadGatewayConfigFile", () => {
   it("rejects a missing file with a clear error", async () => {
     await expect(loadGatewayConfigFile(path.join(dir, "does-not-exist.json"))).rejects.toThrow(GatewayConfigError);
   });
+
+  it("names GATEWAY_CONFIG_PATH and the resolved path when the config is missing, so a container built without a mounted config fails fast with an actionable message", async () => {
+    const missingPath = path.join(dir, "does-not-exist.json");
+    let thrown: unknown;
+    try {
+      await loadGatewayConfigFile(missingPath);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(GatewayConfigError);
+    const message = (thrown as Error).message;
+    expect(message).toContain("GATEWAY_CONFIG_PATH");
+    expect(message).toContain(missingPath);
+  });
 });
 
 describe("parseTrustProxy", () => {
