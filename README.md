@@ -304,6 +304,40 @@ proxy-trust mismatch (e.g. OIDC redirect URIs coming back with the wrong
 scheme/host) is diagnosable from the logs alone, without having to check
 the env var configuration by hand.
 
+### `OIDC_REQUIRE_VERIFIED_EMAIL`
+
+By default (`OIDC_REQUIRE_VERIFIED_EMAIL` unset, or explicitly `true`) the
+gateway only trusts an ID token's `email` claim when the token also asserts
+`email_verified === true`; otherwise the login callback throws
+`EmailNotVerifiedError` and the user is rejected. That's the safe default:
+an IdP that can be configured (or tricked) into asserting an unverified
+email on an allowed domain would otherwise let an attacker impersonate a
+real employee and inherit their agent binding.
+
+Set `OIDC_REQUIRE_VERIFIED_EMAIL=false` only if your IdP is known to assert
+`email_verified: false` (or omit the claim) for accounts whose email
+address you otherwise trust completely. The motivating case: Okta's **org**
+authorization server advertises `email_verified` in `claims_supported`, but
+the value reflects Okta's own email-verification workflow, not whether the
+address is real — users provisioned by directory sync or admin creation
+commonly get `email_verified = false` *forever*, even though the address is
+their actual daily-use work email and login identifier. Org authorization
+servers also can't define custom claim mappings (that needs a **custom**
+auth server / API Access Management), so there's no Okta-side fix available
+to a deployment in this situation — without this flag it simply cannot use
+the gateway.
+
+**Setting this to `false` means the gateway trusts whatever email the IdP
+asserts, with no further check.** This is only acceptable when you fully
+control the IdP and it is your sole identity source. Any value other than
+exactly `true` or `false` (including unset-but-misspelled variants like
+`1`, `yes`, or trailing whitespace) fails validation at startup rather than
+silently choosing either behavior. The effective value is logged at
+startup alongside `trustProxy` in the `"listening"` log line, and a
+dedicated warning is logged whenever verification is relaxed, so this
+security-relevant setting is visible from the logs, not just from reading
+this README.
+
 ## Deploying to ECS Fargate
 
 For orchestrators beyond plain `docker run` — ECS Fargate specifically — see

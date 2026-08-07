@@ -9,6 +9,7 @@ import {
   loadGatewayConfigFile,
   parseBooleanEnv,
   parseCompanyIdAllowlist,
+  parseRequireVerifiedEmailEnv,
   parseTrustProxy,
   validateSchedulerBaseUrl,
 } from "../src/config.js";
@@ -109,6 +110,20 @@ describe("parseBooleanEnv", () => {
     expect(parseBooleanEnv("TRUE")).toBe(true);
     expect(parseBooleanEnv("yes")).toBe(true);
     expect(parseBooleanEnv("on")).toBe(true);
+  });
+});
+
+describe("parseRequireVerifiedEmailEnv", () => {
+  it("defaults to strict (true) when unset", () => {
+    expect(parseRequireVerifiedEmailEnv(undefined)).toBe(true);
+  });
+
+  it("is strict (true) for the literal string \"true\"", () => {
+    expect(parseRequireVerifiedEmailEnv("true")).toBe(true);
+  });
+
+  it("is relaxed (false) only for the literal string \"false\"", () => {
+    expect(parseRequireVerifiedEmailEnv("false")).toBe(false);
   });
 });
 
@@ -353,5 +368,49 @@ describe("loadAppEnv — agent broker is opt-in", () => {
       SCHEDULER_ALLOW_INSECURE_URL: "true",
     } as unknown as NodeJS.ProcessEnv);
     expect(env.SCHEDULER_BASE_URL).toBe("http://127.0.0.1:4000");
+  });
+
+  describe("OIDC_REQUIRE_VERIFIED_EMAIL", () => {
+    it("is strict by default when unset — absent env var must behave exactly as before this option existed", () => {
+      const env = loadAppEnv(BASE_ENV as unknown as NodeJS.ProcessEnv);
+      expect(env.OIDC_REQUIRE_VERIFIED_EMAIL).toBeUndefined();
+      expect(parseRequireVerifiedEmailEnv(env.OIDC_REQUIRE_VERIFIED_EMAIL)).toBe(true);
+    });
+
+    it("accepts the literal string \"false\" to disable the check", () => {
+      const env = loadAppEnv({
+        ...BASE_ENV,
+        OIDC_REQUIRE_VERIFIED_EMAIL: "false",
+      } as unknown as NodeJS.ProcessEnv);
+      expect(parseRequireVerifiedEmailEnv(env.OIDC_REQUIRE_VERIFIED_EMAIL)).toBe(false);
+    });
+
+    it("accepts the literal string \"true\" explicitly", () => {
+      const env = loadAppEnv({
+        ...BASE_ENV,
+        OIDC_REQUIRE_VERIFIED_EMAIL: "true",
+      } as unknown as NodeJS.ProcessEnv);
+      expect(parseRequireVerifiedEmailEnv(env.OIDC_REQUIRE_VERIFIED_EMAIL)).toBe(true);
+    });
+
+    it("fails closed at startup on a malformed value instead of silently becoming permissive", () => {
+      expect(() =>
+        loadAppEnv({
+          ...BASE_ENV,
+          OIDC_REQUIRE_VERIFIED_EMAIL: "nope",
+        } as unknown as NodeJS.ProcessEnv),
+      ).toThrow(GatewayConfigError);
+    });
+
+    it("rejects common near-miss truthy/falsy tokens rather than guessing (\"1\", \"False\", trailing whitespace)", () => {
+      for (const value of ["1", "0", "False", "TRUE", "false ", " false"]) {
+        expect(() =>
+          loadAppEnv({
+            ...BASE_ENV,
+            OIDC_REQUIRE_VERIFIED_EMAIL: value,
+          } as unknown as NodeJS.ProcessEnv),
+        ).toThrow(GatewayConfigError);
+      }
+    });
   });
 });

@@ -19,6 +19,7 @@ import {
   loadGatewayConfigFile,
   parseBooleanEnv,
   parseCompanyIdAllowlist,
+  parseRequireVerifiedEmailEnv,
   parseTrustProxy,
   toConfigEmployees,
 } from "./config.js";
@@ -64,12 +65,14 @@ async function main() {
   // that could silently diverge if `env` is ever transformed before this
   // point.
   const oidcConfig = loadOidcConfigFromEnv({ env: env as unknown as NodeJS.ProcessEnv });
+  const requireVerifiedEmail = parseRequireVerifiedEmailEnv(env.OIDC_REQUIRE_VERIFIED_EMAIL);
   const oidc = new OidcAdapter(
     oidcConfig,
     new RealOidcPort({
       issuerUrl: oidcConfig.issuerUrl,
       clientId: oidcConfig.clientId,
       clientSecret: oidcConfig.clientSecret,
+      requireVerifiedEmail,
     }),
   );
 
@@ -136,9 +139,20 @@ async function main() {
   // trusted — is diagnosable from the logs without having to go re-check
   // env vars by hand. See README's "Reverse proxies and TRUST_PROXY".
   app.log.info(
-    { port, agents: bindings.size(), trustProxy: trustProxy ?? false },
+    { port, agents: bindings.size(), trustProxy: trustProxy ?? false, requireVerifiedEmail },
     "paperclip-chat-gateway listening",
   );
+  // requireVerifiedEmail is a security-relevant setting (see
+  // RealOidcPortOptions.requireVerifiedEmail and README's "Reverse proxies
+  // and TRUST_PROXY" section) that defaults to strict/true — call out the
+  // relaxed case explicitly so it can't be missed by only reading env vars.
+  if (!requireVerifiedEmail) {
+    app.log.warn(
+      "OIDC_REQUIRE_VERIFIED_EMAIL=false — this gateway trusts whatever email address the identity " +
+        "provider asserts, even without email_verified === true. Only acceptable when you fully control " +
+        "the IdP and it is your sole identity source.",
+    );
+  }
   // Explicit, unmissable startup line for which trust-boundary mode this
   // deployment is in — the agent broker is opt-in (see AppEnv.AGENT_JWT_SECRET),
   // so an operator scanning logs should never have to infer this from the
